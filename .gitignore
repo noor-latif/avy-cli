@@ -1,0 +1,28 @@
+# Credentials and personal data
+token.json
+avy_token.json
+*.token
+.avy/
+
+# Logs, captures and generated artifacts
+*.log
+*.har
+*.saz
+*.pcap
+*.apk
+*.xapk
+*.png
+*.jpg
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
