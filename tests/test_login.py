@@ -132,12 +132,11 @@ class LoginTests(LoginServerTestCase):
         self.assertIn(b'id="bankid-launch"', body)
         self.assertNotIn(b"synthetic-launch", body)
 
-        status, headers, body = self.request("GET", "/launch")
+        status, headers, body = self.request("POST", "/rearm")
         self.assertEqual(status, 200)
         self.assertEqual(self.header(headers, "Content-Type"), "application/json")
-        launch = json.loads(body)
-        self.assertEqual(launch["token"], "synthetic-launch&value")
-        self.assertGreaterEqual(launch["age"], 0)
+        self.assertEqual(json.loads(body)["token"], "synthetic-launch&value")
+        self.assertEqual(self.avy.orders, 2, "a launch re-arms before opening BankID")
 
         images = []
         for tick in (1, 2):

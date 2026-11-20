@@ -32,22 +32,24 @@ img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 <script>
 const img=document.getElementById('qr');
 setInterval(()=>{img.src='/qr.svg?t='+Date.now();},1000);
-setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
+const poll=setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
 document.getElementById('status').textContent=t;
-if(t==='BankID: retrying'){history.replaceState({},'');location.replace('/');}},2000);
+if(t==='BankID: retrying'){history.replaceState({},'');location.replace('/');}
+if(t.startsWith('Logged in')){clearInterval(poll);}},2000);
 const launch = document.getElementById('bankid-launch');
 const agent = navigator.userAgent;
 const mobile = /iPhone|iPad|iPod|Android/.test(agent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const inApp = /FBAN|FBAV|Instagram|Line\\/|WhatsApp|Slack|Twitter|Puffin|GSA\\//.test(agent)
     || (/iPhone|iPad/.test(agent) && !/Safari|CriOS|FxiOS|EdgiOS/.test(agent));
-async function openBankID(event, token) {
+async function openBankID(event) {
     if (event) event.preventDefault();
-    if (!token) {
-        try {
-            token = (await (await fetch('/launch')).json()).token;
-        } catch (_) { return; }
-    }
+    let token;
+    try {
+        const reply = await fetch('/rearm', {method: 'POST'});
+        if (!reply.ok) return;
+        token = (await reply.json()).token;
+    } catch (_) { return; }
     const target = mobile
         ? 'https://app.bankid.com/?autostarttoken=' + encodeURIComponent(token)
             + '&redirect=' + encodeURIComponent(location.origin + '/#bankid')
@@ -61,9 +63,7 @@ if (launch) {
         document.getElementById('status').textContent =
             'This browser cannot hand off to BankID. Open this page in Safari or Chrome first.';
     } else {
-        fetch('/launch').then(r => r.json()).then(({token, age}) => {
-            if (mobile && age < 5 && !location.hash) openBankID(null, token);
-        }).catch(() => {});
+        if (mobile && !location.hash) openBankID();
     }
 }
 </script></body></html>"""
@@ -112,12 +112,15 @@ def _login(*, confirm=False):
             f"{TOKEN_FILE} holds a session that has not expired; run avy-login --confirm "
             "to replace it.")
     request = partial(call, authenticated=False)
-    state = {"order": None, "qr_path": None, "token": "", "armed_at": 0.0,
+    state = {"order": None, "qr_path": None, "token": "",
              "text": "Waiting for BankID..."}
     state_lock = threading.Lock()
 
     def arm():
-        """Ask Avy for a fresh order; Avy's order must be started within ~30 seconds."""
+        """Ask Avy for a fresh order; Avy's order must be started within ~30 seconds.
+
+        Called at startup, by every launch from the page, and when an order expires.
+        """
         auth = request("POST", "/v1/auth/bankid/auth", {})
         if not isinstance(auth, dict) or not all(
             isinstance(auth.get(key), str) and auth[key] for key in ("order_ref", "qr_start_token")
@@ -127,8 +130,7 @@ def _login(*, confirm=False):
         with state_lock:
             state.update(order={"order_ref": auth["order_ref"]},
                          qr_path="/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe=""),
-                         token=auto_start if isinstance(auto_start, str) else "",
-                         armed_at=time.monotonic())
+                         token=auto_start if isinstance(auto_start, str) else "")
         return state["order"]
 
     order = arm()
@@ -161,10 +163,6 @@ def _login(*, confirm=False):
                 content_type = "image/svg+xml"
             elif path == "/status":
                 body, content_type = state["text"].encode(), "text/plain; charset=utf-8"
-            elif path == "/launch":
-                body = json.dumps({"token": state["token"],
-                                   "age": round(time.monotonic() - state["armed_at"], 1)}).encode()
-                content_type = "application/json"
             elif path == "/":
                 body, content_type = HTML.encode(), "text/html; charset=utf-8"
             else:
@@ -172,6 +170,18 @@ def _login(*, confirm=False):
                 return
             self.send_response(200)
             self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            if self.path.partition("?")[0] != "/rearm":
+                self.send_error(404)
+                return
+            arm()
+            body = json.dumps({"token": state["token"]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -193,6 +203,8 @@ def _login(*, confirm=False):
                 result = request("POST", "/v1/auth/bankid/collect", order)
                 status = result.get("status") if isinstance(result, dict) else None
                 if status == "complete":
+                    state["text"] = "Logged in. You can close this page."
+                    time.sleep(3)
                     break
                 if status not in ("pending", "failed", "cancelled"):
                     raise SystemExit("Avy returned an unknown BankID status")
