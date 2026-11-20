@@ -1,56 +1,71 @@
+import base64
 import importlib.util
 import io
 import itertools
-import re
+import json
+import shutil
+import tempfile
 import threading
 import time
 import unittest
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import ExitStack, redirect_stdout
 from http.client import HTTPConnection
-from http.cookies import SimpleCookie
 from http.server import ThreadingHTTPServer
-from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import patch
 from xml.etree import ElementTree
 
 import avy_login
 
-COOKIE = "__Host-avy-login"
-INVITE = re.compile(r"Invite suffix: #(\S+)")
+
+def token_expiring_in(seconds):
+    """A token shaped like Avy's, so expiry is readable without the signing key."""
+    payload = base64.urlsafe_b64encode(json.dumps({"exp": int(time.time()) + seconds}).encode())
+    return f"header.{payload.decode().rstrip('=')}.signature"
 
 
 class SyntheticAvy:
     """Answer BankID calls without touching Avy, and hold collect until the test ends."""
 
-    def __init__(self, done, frames):
+    def __init__(self, done, frames, status):
         self.done = done
         self.frames = frames
+        self.status = status
         self.collecting = threading.Event()
 
-    def __call__(self, method, path, body=None, *, authenticated):
-        if authenticated:
-            raise AssertionError("login must not authenticate the BankID calls")
+    def __call__(self, method, path, body=None, *, authenticated=True):
+        if path.startswith("/v1/auth/bankid/") and authenticated:
+            raise AssertionError(f"BankID call must not be authenticated: {path}")
         if path == "/v1/auth/bankid/auth":
             return {"order_ref": "fixture-order", "qr_start_token": "fixture-qr",
                     "auto_start_token": "synthetic-launch&value"}
+        if path == "/v1/auth/bankid/qr/fixture-qr":
+            return {"qr_code": next(self.frames)}
         if path == "/v1/auth/bankid/collect":
             self.collecting.set()
             self.done.wait(5)
-            return {"status": "cancelled"}
-        if path == "/v1/auth/bankid/qr/fixture-qr":
-            return {"qr_code": next(self.frames)}
+            return {"status": self.status}
+        if path == "/v1/auth/bankid/login":
+            return {"token": "synthetic-token"}
+        if authenticated and path == "/v1/auth/profile":
+            return {"name": "Synthetic Person"}
         raise AssertionError(f"Unexpected request: {method} {path}")
 
 
 @unittest.skipUnless(importlib.util.find_spec("qrcode"), "login dependency not installed")
 class LoginServerTestCase(unittest.TestCase):
-    def start(self, *, remote=True):
+    def start(self, *, status="cancelled", token=None, confirm=False):
         """Run _login on a real loopback server bound to an ephemeral port."""
         self.done = threading.Event()
         self.port = Future()
         self.frames = (f"synthetic frame {n}" for n in itertools.count(1))
         self.output = io.StringIO()
+        self.tokens = Path(tempfile.mkdtemp(prefix="avy-login-test-"))
+        self.addCleanup(shutil.rmtree, self.tokens)
+        self.token_file = self.tokens / "token.json"
+        if token is not None:
+            self.token_file.write_text(json.dumps({"token": token}), encoding="utf-8")
 
         def bind(_, handler):
             server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -59,12 +74,15 @@ class LoginServerTestCase(unittest.TestCase):
 
         stack = ExitStack()
         self.addCleanup(stack.close)
-        self.avy = SyntheticAvy(self.done, self.frames)
+        self.avy = SyntheticAvy(self.done, self.frames, status)
         stack.enter_context(patch.object(avy_login, "call", self.avy))
+        stack.enter_context(patch.object(avy_login, "TOKEN_FILE", self.token_file))
+        stack.enter_context(patch.object(avy_login, "CAP_FILE", self.tokens / "capabilities.json"))
+        stack.enter_context(patch.object(avy_login, "refresh_capabilities", lambda: None))
         stack.enter_context(patch.object(avy_login, "ThreadingHTTPServer", bind))
         stack.enter_context(redirect_stdout(self.output))
         pool = stack.enter_context(ThreadPoolExecutor())
-        self.login = pool.submit(avy_login._login, remote=remote)
+        self.login = pool.submit(avy_login._login, confirm=confirm)
         self.addCleanup(self.finish)
         return self.port.result(timeout=5)
 
@@ -74,8 +92,11 @@ class LoginServerTestCase(unittest.TestCase):
             self.login.result(timeout=5)
         except SystemExit as exc:
             self.assertIn("cancelled", str(exc))
-        else:
-            self.fail("_login did not stop after BankID was cancelled")
+
+    def complete(self):
+        """Let collect finish with status=complete and wait for the token to be written."""
+        self.done.set()
+        self.login.result(timeout=5)
 
     def request(self, method, path, body=None, headers=None):
         connection = HTTPConnection("127.0.0.1", self.port.result(timeout=5), timeout=5)
@@ -90,178 +111,21 @@ class LoginServerTestCase(unittest.TestCase):
     def header(headers, name):
         return next((value for key, value in headers if key.lower() == name.lower()), None)
 
-    def redeem(self, token, content_type="application/octet-stream"):
-        if isinstance(token, str):
-            token = token.encode()
-        headers = {} if content_type is None else {"Content-Type": content_type}
-        return self.request("POST", "/redeem", body=token, headers=headers)
-
-    def redeem_declared(self, length, content_type="application/octet-stream"):
-        """Declare a length or type the server must reject before reading a body."""
-        headers = {"Content-Length": str(length)}
-        if content_type is not None:
-            headers["Content-Type"] = content_type
-        return self.request("POST", "/redeem", headers=headers)
-
-    def cookie(self, headers):
-        values = [value for key, value in headers if key.lower() == "set-cookie"]
-        self.assertEqual(len(values), 1, values)
-        jar = SimpleCookie()
-        jar.load(values[0])
-        self.assertIn(COOKIE, jar)
-        return values[0], jar[COOKIE]
-
-    def invite(self, timeout=5):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            match = INVITE.search(self.output.getvalue())
-            if match:
-                return match.group(1)
-            time.sleep(0.02)
-        self.fail(f"no invite was printed: {self.output.getvalue()!r}")
-
-    def assert_no_cookie(self, headers):
-        self.assertIsNone(self.header(headers, "Set-Cookie"))
+    @staticmethod
+    def refuse_to_call(*_, **__):
+        raise AssertionError("login must stop before calling Avy")
 
 
-class RemoteLoginTests(LoginServerTestCase):
-    def test_public_bootstrap_has_no_qr_or_credentials(self):
-        self.start(remote=True)
+class LoginTests(LoginServerTestCase):
+    def test_page_serves_qr_status_and_launch_link(self):
+        self.start()
         status, headers, body = self.request("GET", "/")
         self.assertEqual(status, 200)
         self.assertEqual(self.header(headers, "Content-Type"), "text/html; charset=utf-8")
         self.assertEqual(self.header(headers, "Cache-Control"), "no-store")
-        self.assertNotIn(b"/qr.svg", body)
-        self.assertNotIn(b"<img", body)
-        self.assertNotIn(b"fixture-qr", body)
-        self.assertNotIn(b"app.bankid.com", body)
-        self.assertNotIn(b"synthetic-launch", body)
-        invite = self.invite()
-        self.assertNotIn(invite.encode(), body)
-
-        for path in ("/qr.svg", "/status"):
-            status, headers, body = self.request("GET", path)
-            self.assertEqual(status, 403, path)
-            self.assert_no_cookie(headers)
-        status, _, _ = self.request(
-            "GET", "/qr.svg", headers={"Cookie": f"{COOKIE}={'x' * 43}"})
-        self.assertEqual(status, 403)
-
-    def test_redeem_sets_host_cookie_and_unlocks_qr(self):
-        self.start(remote=True)
-        token = self.invite()
-        self.assertRegex(token, r"\A[A-Za-z0-9_-]{43}\Z")
-
-        status, headers, body = self.redeem(token)
-        self.assertEqual(status, 204)
-        self.assertEqual(body, b"")
-        self.assertEqual(self.header(headers, "Cache-Control"), "no-store")
-        _, morsel = self.cookie(headers)
-        self.assertRegex(morsel.value, r"\A[A-Za-z0-9_-]{43}\Z")
-        self.assertIs(morsel["secure"], True)
-        self.assertIn("httponly", morsel)
-        self.assertEqual(morsel["samesite"], "Strict")
-        self.assertEqual(morsel["path"], "/")
-        self.assertEqual(morsel["domain"], "")
-
-        cookie = {"Cookie": f"{COOKIE}={morsel.value}"}
-        status, headers, body = self.request("GET", "/", headers=cookie)
-        self.assertEqual(status, 200)
         self.assertIn(b'src="/qr.svg"', body)
         self.assertIn(b'https://app.bankid.com/?autostarttoken=synthetic-launch%26value'
                       b'&amp;redirect=null', body)
-        self.assertNotIn(b"Open the full invite link", body)
-
-        status, headers, body = self.request("GET", "/qr.svg", headers=cookie)
-        self.assertEqual(status, 200)
-        self.assertEqual(self.header(headers, "Content-Type"), "image/svg+xml")
-        self.assertEqual(self.header(headers, "Cache-Control"), "no-store")
-        self.assertEqual(ElementTree.fromstring(body).tag, "{http://www.w3.org/2000/svg}svg")
-
-        status, headers, body = self.request("GET", "/status", headers=cookie)
-        self.assertEqual(status, 200)
-        self.assertEqual(self.header(headers, "Content-Type"), "text/plain; charset=utf-8")
-        self.assertIn(b"BankID", body)
-
-    def test_redeem_rejects_bad_malformed_and_replayed_tokens(self):
-        self.start(remote=True)
-        token = self.invite()
-        bad = "A" * 43
-        if bad == token:
-            bad = "B" * 43
-        status, headers, _ = self.redeem(bad)
-        self.assertEqual(status, 403)
-        self.assert_no_cookie(headers)
-
-        for length, content_type in ((42, "application/octet-stream"),
-                                     (44, "application/octet-stream"),
-                                     (43, "text/plain"),
-                                     (43, None)):
-            status, headers, _ = self.redeem_declared(length, content_type)
-            self.assertEqual(status, 400, (length, content_type))
-            self.assert_no_cookie(headers)
-
-        status, headers, _ = self.redeem(token)
-        self.assertEqual(status, 204)
-        _, morsel = self.cookie(headers)
-
-        status, headers, _ = self.redeem(token)
-        self.assertEqual(status, 403)
-        self.assert_no_cookie(headers)
-
-        status, _, _ = self.request(
-            "GET", "/status", headers={"Cookie": f"{COOKIE}={morsel.value}"})
-        self.assertEqual(status, 200)
-
-    def test_deadline_revokes_browser_session(self):
-        clock = SimpleNamespace(now=100)
-        patch_clock = patch.object(avy_login, "time", SimpleNamespace(monotonic=lambda: clock.now))
-        patch_clock.start()
-        self.addCleanup(patch_clock.stop)
-        self.start()
-        status, headers, _ = self.redeem(self.invite())
-        self.assertEqual(status, 204)
-        _, morsel = self.cookie(headers)
-        cookie = {"Cookie": f"{COOKIE}={morsel.value}"}
-        self.assertTrue(self.avy.collecting.wait(5))
-        clock.now += avy_login.TIMEOUT
-        for path in ("/qr.svg", "/status"):
-            self.assertEqual(self.request("GET", path, headers=cookie)[0], 403)
-
-    def test_redeem_is_single_use_under_concurrency(self):
-        self.start(remote=True)
-        token = self.invite().encode()
-        barrier = threading.Barrier(2)
-
-        def attempt(_):
-            connection = HTTPConnection(
-                "127.0.0.1", self.port.result(timeout=5), timeout=5)
-            try:
-                barrier.wait(5)
-                connection.request(
-                    "POST", "/redeem", body=token,
-                    headers={"Content-Type": "application/octet-stream"})
-                response = connection.getresponse()
-                headers = response.getheaders()
-                response.read()
-                return response.status, headers
-            finally:
-                connection.close()
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(attempt, range(2)))
-        self.assertEqual(sorted(status for status, _ in results), [204, 403])
-        granted = sum(
-            1 for _, headers in results if self.header(headers, "Set-Cookie"))
-        self.assertEqual(granted, 1)
-
-
-class LocalLoginTests(LoginServerTestCase):
-    def test_local_mode_serves_fresh_svgs_without_an_invite(self):
-        self.start(remote=False)
-        status, headers, body = self.request("GET", "/")
-        self.assertEqual(status, 200)
-        self.assertIn(b'src="/qr.svg"', body)
 
         images = []
         for tick in (1, 2):
@@ -277,4 +141,30 @@ class LocalLoginTests(LoginServerTestCase):
         status, headers, body = self.request("GET", "/status")
         self.assertEqual(status, 200)
         self.assertEqual(self.header(headers, "Content-Type"), "text/plain; charset=utf-8")
-        self.assertNotIn("Invite suffix", self.output.getvalue())
+        self.assertIn(b"BankID", body)
+
+    def test_unexpired_session_needs_confirm(self):
+        tokens = Path(tempfile.mkdtemp(prefix="avy-login-test-"))
+        self.addCleanup(shutil.rmtree, tokens)
+        token_file = tokens / "token.json"
+        stored = token_expiring_in(3600)
+        token_file.write_text(json.dumps({"token": stored}), encoding="utf-8")
+        with patch.object(avy_login, "TOKEN_FILE", token_file), \
+                patch.object(avy_login, "call", self.refuse_to_call), \
+                self.assertRaises(SystemExit) as raised:
+            avy_login._login()
+        self.assertIn("--confirm", str(raised.exception))
+        self.assertEqual(json.loads(token_file.read_text(encoding="utf-8"))["token"], stored)
+
+    def test_expired_session_is_replaced_without_confirm(self):
+        self.start(status="complete", token=token_expiring_in(-60))
+        self.complete()
+        self.assertEqual(
+            json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")
+        self.assertIn("Logged in as Synthetic Person.", self.output.getvalue())
+
+    def test_confirm_replaces_an_unexpired_session(self):
+        self.start(status="complete", token=token_expiring_in(3600), confirm=True)
+        self.complete()
+        self.assertEqual(
+            json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")

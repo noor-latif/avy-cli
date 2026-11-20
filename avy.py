@@ -159,7 +159,7 @@ def write_private_json(path, data):
         Path(temp.name).unlink(missing_ok=True)
 
 
-def _token_expiry(token):
+def token_expiry(token):
     try:
         segment = token.split(".")[1]
         exp = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))["exp"]
@@ -171,7 +171,7 @@ def _token_expiry(token):
 def refresh_capabilities():
     data = {
         "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "token_expires_at": _token_expiry(get_token()),
+        "token_expires_at": token_expiry(get_token()),
     }
     try:
         features = call("GET", "/v1/features")

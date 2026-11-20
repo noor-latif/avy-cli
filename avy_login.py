@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Log in to Avy with your own BankID using a live QR on localhost."""
 import argparse
+import datetime
+import json
 import os
-import secrets
 import sys
 import threading
 import time
 from functools import partial
-from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote
 
-from avy import ApiError, CAP_FILE, TOKEN_FILE, call, refresh_capabilities, write_private_json
+from avy import (ApiError, CAP_FILE, TOKEN_FILE, call, refresh_capabilities,
+                 token_expiry, write_private_json)
 
 PORT = int(os.environ.get("AVY_LOGIN_PORT", "8765"))
 TIMEOUT = int(os.environ.get("AVY_LOGIN_TIMEOUT", "300"))
@@ -43,58 +44,49 @@ if (launch) {
 }
 </script></body></html>"""
 
-INVITE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Private Avy login</title></head><body><h1>Private Avy login</h1>
-<p id="invite-status" role="status">Open the full invite link from your terminal.
-This page needs JavaScript to open it.</p>
-<script>
-async function redeem() {
-    const status = document.getElementById('invite-status');
-    const invite = location.hash.slice(1);
-    if (!invite) return;
-    history.replaceState(null, '', '/');
-    if (!window.isSecureContext) {
-        status.textContent = 'Open your invite using HTTPS.';
-        return;
-    }
-    status.textContent = 'Opening login…';
-    try {
-        const reply = await fetch('/redeem', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/octet-stream'},
-            body: invite,
-            redirect: 'error',
-        });
-        if (reply.status === 204) {
-            location.reload();
-            return;
-        }
-    } catch (_) {}
-    status.textContent = 'This invite could not be opened. Restart avy-login for a new invite.';
-}
-window.addEventListener('hashchange', redeem);
-redeem();
-</script></body></html>"""
-
-SESSION_COOKIE = "__Host-avy-login"
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--remote", action="store_true",
-                        help="require a one-time invite before displaying login over an HTTPS tunnel")
+    parser.add_argument("--confirm", action="store_true",
+                        help="replace a stored session that has not expired")
     args = parser.parse_args()
     try:
-        _login(remote=args.remote)
+        _login(confirm=args.confirm)
     except (ApiError, OSError) as exc:
         raise SystemExit(str(exc)) from None
 
 
-def _login(*, remote=False):
+def _live_session():
+    """True when the stored token is present and not provably expired."""
+    try:
+        token = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))["token"]
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+    expires = token_expiry(token) if isinstance(token, str) else None
+    if expires is None:
+        return True
+    return datetime.datetime.fromisoformat(expires) > datetime.datetime.now(datetime.timezone.utc)
+
+
+def _account_label(profile):
+    """Account name from the profile, for the operator reading the terminal."""
+    if not isinstance(profile, dict):
+        return None
+    for key in ("name", "full_name", "email"):
+        value = profile.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return next((value.strip() for key, value in profile.items()
+                 if key.endswith("_name") and isinstance(value, str) and value.strip()), None)
+
+
+def _login(*, confirm=False):
     import qrcode
     from qrcode.image.svg import SvgPathFillImage
 
+    if _live_session() and not confirm:
+        raise SystemExit(
+            f"{TOKEN_FILE} holds a session that has not expired; run avy-login --confirm "
+            "to replace it.")
     request = partial(call, authenticated=False)
     auth = request("POST", "/v1/auth/bankid/auth", {})
     if not isinstance(auth, dict) or not all(
@@ -112,52 +104,9 @@ def _login(*, remote=False):
     login_page = HTML.replace("<!-- launch -->", launch).encode()
     status_text = "Waiting for BankID..."
     deadline = time.monotonic() + TIMEOUT
-    invite = secrets.token_urlsafe(32) if remote else None
-    session = None
-    access_lock = threading.Lock()
-    closed = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
-        timeout = 5 if remote else None
-
-        def _allowed(self):
-            if not remote:
-                return True
-            if closed.is_set() or time.monotonic() >= deadline or session is None:
-                return False
-            try:
-                cookie = SimpleCookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE)
-            except CookieError:
-                return False
-            return cookie is not None and secrets.compare_digest(
-                cookie.value.encode(), session.encode())
-
-        def do_POST(self):
-            nonlocal invite, session
-            if not remote or self.path != "/redeem":
-                self.send_error(404)
-                return
-            if (self.headers.get_all("Content-Length") != ["43"]
-                    or self.headers.get("Transfer-Encoding") is not None
-                    or self.headers.get("Content-Type") != "application/octet-stream"):
-                self.send_error(400)
-                return
-            supplied = self.rfile.read(43)
-            with access_lock:
-                if (invite is not None and not closed.is_set() and time.monotonic() < deadline
-                        and secrets.compare_digest(supplied, invite.encode())):
-                    session = secrets.token_urlsafe(32)
-                    invite = None
-                    granted = session
-                else:
-                    granted = None
-            if granted is None:
-                self.send_error(403)
-                return
-            self.send_response(204)
-            self.send_header("Set-Cookie",
-                             f"{SESSION_COOKIE}={granted}; Secure; HttpOnly; SameSite=Strict; Path=/")
-            self.end_headers()
+        timeout = 5
 
         def end_headers(self):
             self.send_header("Cache-Control", "no-store")
@@ -170,10 +119,6 @@ def _login(*, remote=False):
 
         def do_GET(self):
             path = self.path.partition("?")[0]
-            allowed = self._allowed()
-            if not allowed and path != "/":
-                self.send_error(403)
-                return
             if path == "/qr.svg":
                 try:
                     result = request("GET", qr_path)
@@ -188,13 +133,9 @@ def _login(*, remote=False):
             elif path == "/status":
                 body, content_type = status_text.encode(), "text/plain; charset=utf-8"
             elif path == "/":
-                body = login_page if allowed else INVITE_PAGE.encode()
-                content_type = "text/html; charset=utf-8"
+                body, content_type = login_page, "text/html; charset=utf-8"
             else:
                 self.send_error(404)
-                return
-            if allowed and remote and not self._allowed():
-                self.send_error(403)
                 return
             self.send_response(200)
             self.send_header("Content-Type", content_type)
@@ -209,13 +150,10 @@ def _login(*, remote=False):
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            if remote:
-                print(f"Protected login on port {server.server_port}. Point your HTTPS tunnel at this port.",
-                      flush=True)
-                print(f"Invite suffix: #{invite}", flush=True)
-            else:
-                print(f"Open http://127.0.0.1:{server.server_port}/ and scan the live QR with BankID.",
-                      flush=True)
+            print(f"Open http://127.0.0.1:{server.server_port}/ and scan the live QR with BankID.",
+                  flush=True)
+            print("To log in from a phone, tunnel this port and open the tunnel URL there.",
+                  flush=True)
             print("Confirm that the BankID app shows Avy as the relying party.", flush=True)
             while time.monotonic() < deadline:
                 result = request("POST", "/v1/auth/bankid/collect", order)
@@ -234,8 +172,6 @@ def _login(*, remote=False):
             else:
                 raise SystemExit("BankID approval timed out")
         finally:
-            with access_lock:
-                closed.set()
             server.shutdown()
             worker.join()
 
@@ -244,6 +180,11 @@ def _login(*, remote=False):
         raise SystemExit("Avy login did not return a usable token")
     write_private_json(TOKEN_FILE, token)
     print(f"OK. Token written to {TOKEN_FILE} (mode 0600). Never commit or share it.")
+    try:
+        label = _account_label(call("GET", "/v1/auth/profile"))
+    except ApiError:
+        label = None
+    print(f"Logged in as {label}." if label else "Logged in; Avy did not return an account name.")
     try:
         refresh_capabilities()
         print(f"Capability map saved to {CAP_FILE}")

@@ -41,54 +41,35 @@ After login the helper writes `~/.avy/capabilities.json` (mode `0600`) with the
 enabled features, form types and token expiry — no token or personal data.
 Read it with `avy capabilities`; rebuild it with `--refresh`.
 
-### Log in from your phone (`--remote`)
+### Log in from your phone
 
-Use remote mode when the CLI runs on a headless or remote machine and the phone
-holding BankID is not on the same network. From a checkout, run
-`.venv/bin/avy-login --remote` instead.
+The login page binds `127.0.0.1`. To open it from a phone that is not on the
+same network, tunnel the port it prints, from the same host:
 
 ```bash
-avy-login --remote
+avy-login
+# Open http://127.0.0.1:8765/ and scan the live QR with BankID.
 ```
-
-It prints `Protected login on port <port>` and an invite suffix
-(`Invite suffix: #…`). In a second terminal **on the same host**, open a Devhop
-tunnel to that port:
 
 ```bash
 npx devhop 8765 --no-qr
 ```
 
-Substitute the port `avy-login` printed if it is not 8765. Devhop prints a
-public HTTPS URL; append the invite to it unchanged, including the leading `#`:
+Substitute the port `avy-login` printed if it is not 8765. Open the HTTPS URL
+Devhop prints. On iOS and Android the page tries to open BankID by itself; if
+the browser blocks the launch, return to the page and tap **Open BankID**. On
+desktop, scan the live QR with your phone. Approve only if BankID names **Avy**.
 
-```
-https://<generated-name>/#<invite>
-```
+The tunnel URL is the page's only credential; stop Devhop when the login
+finishes. The session token is written on the machine running the CLI, never in
+the browser or through the tunnel.
 
-Open the complete URL in a regular browser, not a chat preview. The page
-unlocks automatically. On mobile, it tries to open BankID; if the browser
-blocks it, return to the login page and tap **Open BankID**. On desktop, scan
-the live QR with your phone. If Avy does not provide a launch link for the
-order, use the QR on another screen. Approve only if BankID names **Avy**.
-
-The invite is a bearer secret, not merely an address: without it the public URL
-shows only a placeholder and refuses to serve the QR or the BankID status. It
-is consumed on first use and is tied to the BankID order, so it stops working
-when that order ends or the login times out (`AVY_LOGIN_TIMEOUT`, 300 seconds
-by default). Keep it private — anyone who opens the full link uses it up, and
-chat clients and agents may open links automatically. Do not post it in chat,
-an issue or an agent session. If it was already used or has expired, stop
-Devhop, run `avy-login --remote` again and use the new invite.
-
-When login finishes, stop Devhop with Ctrl-C. The session token is written on
-the machine running the CLI, never in the browser or through the tunnel.
+`avy-login` refuses to replace a stored session that has not expired; pass
+`--confirm` to replace one anyway.
 
 Devhop is a separate tool you run yourself (the CLI does not call or bundle
 it); the tunnel makes an outbound connection, so no inbound port or router
-change is needed. Remote mode is the only way the login page may be exposed. A
-normal `avy-login` binds `127.0.0.1` and is meant to stay on that machine; do
-not put it behind a tunnel.
+change is needed.
 
 ## Commands
 
@@ -157,8 +138,8 @@ Add `--confirm` to send the write.
 | `AVY_TOKEN_FILE` | `~/.avy/token.json` | where the token is stored |
 | `AVY_CAPABILITIES_FILE` | `~/.avy/capabilities.json` | cached capability map |
 | `AVY_API_BASE` | `https://api.avy.se/api` | API base URL |
-| `AVY_LOGIN_PORT` | `8765` | login page port (`--remote` included) |
-| `AVY_LOGIN_TIMEOUT` | `300` | seconds to wait for approval; remote invite lifetime |
+| `AVY_LOGIN_PORT` | `8765` | login page port |
+| `AVY_LOGIN_TIMEOUT` | `300` | seconds to wait for approval |
 
 ## Security and privacy
 
@@ -166,13 +147,11 @@ Add `--confirm` to send the write.
   into a chat, or include it in an issue report.
 - API responses contain personal data (personnummer, address, phone, invoices);
   redact before sharing.
-- The login helper serves `127.0.0.1` and stores no telemetry. Remote mode
-  (`--remote`) is an explicit opt-in that exposes only the login page, through
-  a temporary Devhop tunnel. That tunnel is fronted by Cloudflare, which
-  terminates TLS, so the QR and status pass through Devhop's relay; the token
-  does not. Devhop needs no account or email. The remote invite is a one-time
-  bearer secret and must never be committed or posted. Stop Devhop when the
-  login finishes.
+- The login helper serves `127.0.0.1` and stores no telemetry. Tunneling that
+  port with Devhop reaches it from another device; the tunnel URL is the page's
+  only credential. Cloudflare terminates TLS in front of Devhop, so the QR and
+  status pass through that relay; the token does not. Devhop needs no account
+  or email. Stop the tunnel when the login finishes.
 
 ## Agents and CLI-Hub
 
