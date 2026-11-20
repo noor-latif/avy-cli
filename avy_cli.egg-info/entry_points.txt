@@ -1,3 +1,0 @@
-[console_scripts]
-avy = avy:main
-avy-login = avy_login:main

@@ -1,2 +1,0 @@
-avy
-avy_login
