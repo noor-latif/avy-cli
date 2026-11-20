@@ -24,9 +24,9 @@ Rules that the code enforces, each for a reason:
 - **The tunnel URL is the only credential.** There is no invite token: anyone
   who reaches the page during the order can complete a login as themselves, and
   that session is what gets stored. Owner's decision, recorded in `SECURITY.md`.
-- **One order per page load.** The page arms it (`POST /rearm`); nothing is
-  armed at CLI start. Timer re-arming was removed because the app would approve
-  an order the page had already replaced.
+- **One active order per login process.** The page requests it (`POST /rearm`);
+  nothing is armed at CLI start. Tabs reuse an existing order until Avy reports
+  it expired, rather than replacing an order someone may be approving.
 - **Order lifetime is about 30 seconds.** Measured: `startFailed` and
   `qr start token expired` at 31 s with no client. On expiry the page says so
   and a reload arms a fresh order.

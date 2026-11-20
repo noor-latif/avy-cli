@@ -58,17 +58,13 @@ npx devhop 8765 --no-qr
 Substitute the port `avy-login` printed if it is not 8765. Open the HTTPS URL
 Devhop prints. A fresh quick tunnel takes up to a minute before its name
 resolves; if the browser says the host was not found, wait a minute and reload.
-On iOS and Android the page opens BankID through the `bankid://` scheme; if
-nothing happens, tap **BankID did not open?** for BankID's own handoff page. A
-chat webview cannot hand off at all, so open the link in Safari or Chrome. On
-desktop, scan the live QR with your phone. Approve only if BankID names **Avy**.
+On iOS and Android, tap **Open BankID** once the page is ready. If the app
+doesn't open, tap **BankID did not open?** for BankID's own handoff page.
+Use Safari or Chrome rather than an in-app browser. On desktop, scan the live
+QR with your phone. Approve only if BankID names **Avy**.
 
-Each page load arms exactly one BankID order, so the app always approves the
-same one the page is polling. The order lasts about 30 seconds: if the page says
-it expired, reload the page and a fresh one is armed. **Open BankID** is a plain
-`bankid://` link, which is what makes it work in Safari and Chrome alike; the
-browser tries to open the app itself when the page loads, and tapping the link
-works in both. Once
+Opening or reloading the page reuses the current order while Avy reports it
+active. If the page says the order expired, reload to start a new one. Once
 the page says the login is complete, stop Devhop.
 
 The tunnel URL is the page's only credential; stop Devhop when the login

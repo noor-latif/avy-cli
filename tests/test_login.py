@@ -205,6 +205,15 @@ class LoginTests(LoginServerTestCase):
         self.assertEqual(
             json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")
 
+    def test_two_pages_reuse_the_same_active_order(self):
+        self.start(arm=False)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: self.request("POST", "/rearm"), range(2)))
+        self.assertEqual(self.avy.orders, 1)
+        for status, _, body in results:
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body), {"token": "synthetic-launch&value"})
+
     def test_expired_order_waits_for_a_page_launch_then_completes(self):
         self.start(collect=(("failed", "startFailed"), ("complete", "")))
         deadline = time.monotonic() + 5

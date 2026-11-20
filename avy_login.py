@@ -54,27 +54,30 @@ const scheme = token => 'bankid:///?autostarttoken=' + encodeURIComponent(token)
 const returning = location.hash === '#bankid';
 if (returning) history.replaceState(null, '', location.pathname);
 async function arm() {
-    try {
-        const info = await (await fetch('/launch')).json();
-        if (info.token && (returning || info.age <= 25)) return info.token;
-        return (await (await fetch('/rearm', {method: 'POST'})).json()).token;
-    } catch (_) { return null; }
+    const response = returning
+        ? await fetch('/launch')
+        : await fetch('/rearm', {method: 'POST'});
+    if (!response.ok) throw new Error('could not start BankID');
+    return (await response.json()).token;
 }
 if (launch) {
     if (inApp) {
         label.textContent =
             'This browser cannot hand off to BankID. Open this page in Safari or Chrome first.';
     } else {
-        const ready = arm().then(token => {
-            if (!token) return null;
-            const url = scheme(token);
-            launch.href = url;
-            web.href = url.replace('bankid:///?', 'https://app.bankid.com/?');
+        arm().then(token => {
+            if (token) {
+                const url = scheme(token);
+                launch.href = url;
+                web.href = url.replace('bankid:///?', 'https://app.bankid.com/?');
+            } else if (returning) {
+                return;
+            }
             armed = true;
             img.src = '/qr.svg';
-            return url;
+        }).catch(() => {
+            label.textContent = 'Could not start BankID. Reload this page.';
         });
-        if (mobile && !returning) ready.then(url => { if (url) location.assign(url); });
     }
 }
 </script></body></html>"""
@@ -126,29 +129,36 @@ def _login(*, confirm=False):
             "to replace it.")
     request = partial(call, authenticated=False)
     state = {"order": None, "qr_path": None, "token": "", "armed_at": 0.0, "generation": 0,
-             "deadline": None, "error": None, "text": "Waiting for BankID..."}
-    state_lock = threading.Lock()
+             "deadline": None, "error": None, "expired": False, "text": "Waiting for BankID..."}
+    state_lock = threading.Condition()
 
     def arm():
-        """Ask Avy for an order; the app must start it within about 30 seconds.
-
-        Only the page arms one, never a timer: the clock starts when a person has the
-        page open, and a second live order would let the app approve the wrong one.
-        """
-        auth = request("POST", "/v1/auth/bankid/auth", {})
-        if not isinstance(auth, dict) or not all(
-            isinstance(auth.get(key), str) and auth[key] for key in ("order_ref", "qr_start_token")
-        ):
-            raise SystemExit("Avy did not return a BankID order and QR token")
-        auto_start = auth.get("auto_start_token")
+        # Serialize order creation; two tabs must not replace an active order.
         with state_lock:
+            if state["order"] is not None and not state["expired"]:
+                return state["token"]
+            try:
+                auth = request("POST", "/v1/auth/bankid/auth", {})
+                if not isinstance(auth, dict) or not all(
+                    isinstance(auth.get(key), str) and auth[key] for key in ("order_ref", "qr_start_token")
+                ):
+                    raise SystemExit("Avy did not return a BankID order and QR token")
+            except (ApiError, SystemExit) as exc:
+                state["error"] = str(exc)
+                state_lock.notify_all()
+                raise
+            auto_start = auth.get("auto_start_token")
+            now = time.monotonic()
             state.update(order={"order_ref": auth["order_ref"]},
                          qr_path="/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe=""),
                          token=auto_start if isinstance(auto_start, str) else "",
-                         armed_at=time.monotonic(),
-                         deadline=state["deadline"] or time.monotonic() + TIMEOUT,
-                         generation=state["generation"] + 1)
-        return state["order"]
+                         armed_at=now,
+                         deadline=state["deadline"] or now + TIMEOUT,
+                         generation=state["generation"] + 1,
+                         expired=False,
+                         text="Waiting for BankID...")
+            state_lock.notify_all()
+            return state["token"]
 
     opened_by = time.monotonic() + TIMEOUT
 
@@ -157,13 +167,11 @@ def _login(*, confirm=False):
         return state["deadline"] or opened_by
 
     def wait_for_order(generation):
-        """Block until the page arms an order, so the app and page never disagree."""
-        while time.monotonic() < deadline():
-            with state_lock:
-                if state["error"] or state["generation"] != generation:
-                    return True
-            time.sleep(0.5)
-        return False
+        with state_lock:
+            return state_lock.wait_for(
+                lambda: state["error"] or state["generation"] != generation,
+                timeout=max(0, deadline() - time.monotonic()),
+            )
 
     class Handler(BaseHTTPRequestHandler):
         timeout = 5
@@ -217,10 +225,8 @@ def _login(*, confirm=False):
                 self.send_error(404)
                 return
             try:
-                arm()
-            except (ApiError, SystemExit) as exc:
-                with state_lock:
-                    state["error"] = str(exc)
+                token = arm()
+            except (ApiError, SystemExit):
                 body = b'{"error":"could not start a BankID order"}'
                 self.send_response(502)
                 self.send_header("Content-Type", "application/json")
@@ -231,7 +237,7 @@ def _login(*, confirm=False):
                 except (BrokenPipeError, ConnectionResetError):
                     pass
                 return
-            body = json.dumps({"token": state["token"]}).encode()
+            body = json.dumps({"token": token}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -277,7 +283,9 @@ def _login(*, confirm=False):
                         state["text"] = text
                         print(text, flush=True)
                 elif hint in EXPIRED_HINTS:
-                    state["text"] = "BankID: order expired. Reload this page."
+                    with state_lock:
+                        state["expired"] = True
+                        state["text"] = "BankID: order expired. Reload this page."
                     print(state["text"], flush=True)
                     if not wait_for_order(generation):
                         raise SystemExit("BankID approval timed out")
