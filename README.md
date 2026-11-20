@@ -58,8 +58,9 @@ npx devhop 8765 --no-qr
 Substitute the port `avy-login` printed if it is not 8765. Open the HTTPS URL
 Devhop prints. A fresh quick tunnel takes up to a minute before its name
 resolves; if the browser says the host was not found, wait a minute and reload.
-On iOS and Android the page tries to open BankID by itself; if
-the browser blocks the launch, return to the page and tap **Open BankID**. On
+On iOS and Android the page opens BankID through the `bankid://` scheme; if
+nothing happens, tap **BankID did not open?** for BankID's own handoff page. A
+chat webview cannot hand off at all, so open the link in Safari or Chrome. On
 desktop, scan the live QR with your phone. Approve only if BankID names **Avy**.
 
 Avy's BankID order has to be started within about 30 seconds. Tapping **Open

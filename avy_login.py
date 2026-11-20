@@ -26,7 +26,8 @@ body{font-family:sans-serif;text-align:center;margin:2rem}
 img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 </style></head><body><h2>Avy BankID login</h2>
 <p>Approve only if the BankID app shows <strong>Avy</strong>.</p>
-<p><a id="bankid-launch" rel="noreferrer" href="https://app.bankid.com/">Open BankID</a></p>
+<p><a id="bankid-launch" rel="noreferrer" href="https://app.bankid.com/">Open BankID</a>
+<a id="bankid-web" href="https://app.bankid.com/">BankID did not open?</a></p>
 <p>On another device, scan the live QR with the BankID app.</p>
 <img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
 <script>
@@ -42,7 +43,7 @@ const mobile = /iPhone|iPad|iPod|Android/.test(agent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const inApp = /FBAN|FBAV|Instagram|Line\\/|WhatsApp|Slack|Twitter|Puffin|GSA\\//.test(agent)
     || (/iPhone|iPad/.test(agent) && !/Safari|CriOS|FxiOS|EdgiOS/.test(agent));
-async function openBankID(event) {
+async function openBankID(event, viaWeb) {
     if (event) event.preventDefault();
     let token;
     try {
@@ -50,15 +51,17 @@ async function openBankID(event) {
         if (!reply.ok) return;
         token = (await reply.json()).token;
     } catch (_) { return; }
-    const target = mobile
-        ? 'https://app.bankid.com/?autostarttoken=' + encodeURIComponent(token)
-            + '&redirect=' + encodeURIComponent(location.origin + '/#bankid')
-        : 'bankid:///?autostarttoken=' + encodeURIComponent(token) + '&redirect=null';
+    const query = 'autostarttoken=' + encodeURIComponent(token)
+        + '&redirect=' + encodeURIComponent(mobile ? location.origin + '/#bankid' : 'null');
+    const target = viaWeb
+        ? 'https://app.bankid.com/?' + query
+        : 'bankid:///?' + query;
     launch.href = target;
     location.assign(target);
 }
 if (launch) {
     launch.addEventListener('click', openBankID);
+    document.getElementById('bankid-web').addEventListener('click', event => openBankID(event, true));
     if (inApp) {
         document.getElementById('status').textContent =
             'This browser cannot hand off to BankID. Open this page in Safari or Chrome first.';
