@@ -84,6 +84,12 @@ have no `options` array. Fields are identified by their `source`, not by UUID:
 | `vitec_other` | master-key question (Ja/Nej) |
 | `vitec_files` | attachments |
 
+These names are landlord-specific. The app also contains `balder_*`,
+`dynamics365_incident_*`, `fast2_*`, `fellowmind_*`, `lime_*`, `momentum_*`,
+`pigello_*`, `tampuuri_*` and `unit4_*` variants. Never hardcode a field
+source or UUID if the tool should work for multiple landlords — read the
+schema with `?include_options=true` and follow `parent_field_uuid` links.
+
 List and create:
 
 ```

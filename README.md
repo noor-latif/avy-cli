@@ -75,10 +75,22 @@ python3 avy.py case-create "Kitchen tap is leaking"
 python3 avy.py case-create "Kitchen tap is leaking" --confirm
 ```
 
-Fields are discovered from the live form schema by their `source`, so nothing
-is hardcoded to one landlord. You can override any selection with
-`--object`, `--space`, `--error` and `--type` (values accept option UUID,
-external ID or label).
+Everything is discovered from the live form schema: field UUIDs, the option
+tree, parent dependencies and landlord-specific field names. Nothing is
+hardcoded to one integration, so it also works for landlords using Balder,
+Fast2, Lime, Momentum, Pigello, Tampuuri, Unit4, Dynamics 365 and others.
+
+The CLI picks the first valid option in each dependent chain and answers
+key/access questions with `Nej` by default. To choose something else, inspect
+`form --options` and override any field:
+
+```bash
+python3 avy.py case-create "Leaking tap" \
+  --set 'f9364cdc-...=Asfaltering' --key Ja --type 24
+```
+
+`--set UUID=VALUE` is repeatable; VALUE accepts an option UUID, external ID or
+label.
 
 ### Arbitrary calls
 

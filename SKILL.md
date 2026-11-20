@@ -35,8 +35,10 @@ python3 avy.py raw GET /v1/message/list
 - Always run `case-create` **without** `--confirm` first and show the user the
   payload. Only add `--confirm` after explicit approval, since it creates a
   real maintenance case sent to the landlord.
-- Use `form --options` to discover valid `--object`, `--space` and `--error`
-  values when a dry run fails. Values accept option UUID, external ID or label.
+- Fields are discovered at runtime for any landlord integration. Use
+  `form --options` to find a field UUID, then override it with
+  `--set '<field-uuid>=<option label or uuid>'` when a dry run picks the wrong
+  value. Option UUID, external ID and label are all accepted.
 - Never print, log or commit the token. Never paste `tenants`/`invoices` output
   into shared channels: it contains personal data.
 - A 401 means the token expired: ask the user to run `avy-login.py` again.
