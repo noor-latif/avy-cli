@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "avy-cli"
+version = "0.1.0"
+description = "Unofficial CLI for the Avy resident API — report housing faults and handle tenant errands from the terminal"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = ["qrcode", "pillow"]
+
+[project.scripts]
+avy = "avy:main"
+avy-login = "avy_login:main"
+
+[tool.setuptools]
+py-modules = ["avy", "avy_login"]

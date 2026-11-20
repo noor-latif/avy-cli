@@ -123,6 +123,58 @@ python3 avy.py raw POST /v2/contact-form --body '{"form_type_id": 24, "fields": 
 - [docs/discovery.md](docs/discovery.md) — how the API was recovered from the app
 - [SKILL.md](SKILL.md) — agent-facing usage notes
 
+## For CLI-Anything / CLI-Hub visitors
+
+This is a **standalone** CLI, not a harness inside the CLI-Anything monorepo.
+It ships a `SKILL.md` in the CLI-Anything agent-skill format (at
+`skills/avy-cli/SKILL.md`), so agents can discover and drive it the usual way.
+
+Install directly for now (it is not yet listed on CLI-Hub):
+
+```bash
+pip install git+https://github.com/noor-latif/avy-cli.git
+npx skills add noor-latif/avy-cli --skill avy-cli -g -y
+```
+
+Each user then logs in with **their own** BankID — credentials are never shared:
+
+```bash
+avy-login          # one-time BankID QR approval
+avy capabilities   # shows which features this landlord enabled
+```
+
+An agent prompt can be as simple as: *"Use the avy-cli skill to report a
+leaking tap."* Side-effecting commands are dry-run by default; the agent must
+ask for explicit approval before adding `--confirm`.
+
+**Want this on CLI-Hub?** Open a PR against
+[HKUDS/CLI-Anything](https://github.com/HKUDS/CLI-Anything) adding this entry
+to `public_registry.json`:
+
+```json
+{
+  "name": "avy",
+  "display_name": "Avy Resident CLI",
+  "version": "0.1.0",
+  "description": "Unofficial CLI for the Avy resident API — report housing faults and manage tenant errands from the terminal",
+  "category": "productivity",
+  "requires": "Python >= 3.9; an Avy tenant account and BankID for login",
+  "homepage": "https://www.avy.se",
+  "source_url": "https://github.com/noor-latif/avy-cli",
+  "package_manager": "pip",
+  "install_strategy": "command",
+  "install_cmd": "pip install git+https://github.com/noor-latif/avy-cli.git",
+  "skill_md": "https://raw.githubusercontent.com/noor-latif/avy-cli/master/skills/avy-cli/SKILL.md",
+  "entry_point": "avy",
+  "contributors": [
+    { "name": "noor-latif", "url": "https://github.com/noor-latif" }
+  ]
+}
+```
+
+Contributions to the CLI itself go through this repo's
+[CONTRIBUTING.md](CONTRIBUTING.md), not the CLI-Anything monorepo.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Short version:
