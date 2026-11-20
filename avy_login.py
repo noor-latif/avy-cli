@@ -34,12 +34,19 @@ setInterval(async()=>{const r=await fetch('/status');
 document.getElementById('status').textContent=await r.text();},2000);
 const launch = document.getElementById('bankid-launch');
 if (launch) {
+    const token = encodeURIComponent(launch.dataset.token);
     const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
         || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
     const android = /Android/.test(navigator.userAgent);
-    if ((ios || android) && !history.state?.bankidAttempted) {
-        history.replaceState({bankidAttempted: true}, '');
-        location.assign(launch.href);
+    if (ios || android) {
+        launch.href = 'https://app.bankid.com/?autostarttoken=' + token
+            + '&redirect=' + encodeURIComponent(location.origin + '/#bankid');
+        if (!location.hash && !history.state?.bankidAttempted) {
+            history.replaceState({bankidAttempted: true}, '');
+            location.assign(launch.href);
+        }
+    } else {
+        launch.href = 'bankid:///?autostarttoken=' + token + '&redirect=null';
     }
 }
 </script></body></html>"""
@@ -98,8 +105,9 @@ def _login(*, confirm=False):
     auto_start = auth.get("auto_start_token")
     launch = ""
     if isinstance(auto_start, str) and auto_start.strip():
-        query = f"autostarttoken={quote(auto_start, safe='')}&amp;redirect=null"
-        launch = (f'<p><a id="bankid-launch" rel="noreferrer" href="https://app.bankid.com/?{query}">'
+        token = quote(auto_start, safe="")
+        launch = (f'<p><a id="bankid-launch" rel="noreferrer" data-token="{token}" '
+                  f'href="https://app.bankid.com/?autostarttoken={token}&amp;redirect=null">'
                   'Open BankID</a></p>')
     login_page = HTML.replace("<!-- launch -->", launch).encode()
     status_text = "Waiting for BankID..."
