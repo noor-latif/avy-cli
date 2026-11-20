@@ -32,7 +32,8 @@ class SyntheticAvy:
         if authenticated:
             raise AssertionError("login must not authenticate the BankID calls")
         if path == "/v1/auth/bankid/auth":
-            return {"order_ref": "fixture-order", "qr_start_token": "fixture-qr"}
+            return {"order_ref": "fixture-order", "qr_start_token": "fixture-qr",
+                    "auto_start_token": "synthetic-launch&value"}
         if path == "/v1/auth/bankid/collect":
             self.collecting.set()
             self.done.wait(5)
@@ -133,6 +134,8 @@ class RemoteLoginTests(LoginServerTestCase):
         self.assertNotIn(b"/qr.svg", body)
         self.assertNotIn(b"<img", body)
         self.assertNotIn(b"fixture-qr", body)
+        self.assertNotIn(b"app.bankid.com", body)
+        self.assertNotIn(b"synthetic-launch", body)
         invite = self.invite()
         self.assertNotIn(invite.encode(), body)
 
@@ -165,6 +168,8 @@ class RemoteLoginTests(LoginServerTestCase):
         status, headers, body = self.request("GET", "/", headers=cookie)
         self.assertEqual(status, 200)
         self.assertIn(b'src="/qr.svg"', body)
+        self.assertIn(b'https://app.bankid.com/?autostarttoken=synthetic-launch%26value'
+                      b'&amp;redirect=null', body)
         self.assertNotIn(b"Open the full invite link", body)
 
         status, headers, body = self.request("GET", "/qr.svg", headers=cookie)

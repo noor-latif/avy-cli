@@ -22,13 +22,25 @@ HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 body{font-family:sans-serif;text-align:center;margin:2rem}
 img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 </style></head><body><h2>Avy BankID login</h2>
-<p>Scan with the BankID app and approve. The QR refreshes every second.</p>
+<p>Approve only if the BankID app shows <strong>Avy</strong>.</p>
+<!-- launch -->
+<p>On another device, scan the live QR with the BankID app.</p>
 <img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
 <script>
 const img=document.getElementById('qr');
 setInterval(()=>{img.src='/qr.svg?t='+Date.now();},1000);
 setInterval(async()=>{const r=await fetch('/status');
 document.getElementById('status').textContent=await r.text();},2000);
+const launch = document.getElementById('bankid-launch');
+if (launch) {
+    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
+        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const android = /Android/.test(navigator.userAgent);
+    if ((ios || android) && !history.state?.bankidAttempted) {
+        history.replaceState({bankidAttempted: true}, '');
+        location.assign(launch.href);
+    }
+}
 </script></body></html>"""
 
 INVITE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -91,6 +103,13 @@ def _login(*, remote=False):
         raise SystemExit("Avy did not return a BankID order and QR token")
     order = {"order_ref": auth["order_ref"]}
     qr_path = "/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe="")
+    auto_start = auth.get("auto_start_token")
+    launch = ""
+    if isinstance(auto_start, str) and auto_start.strip():
+        query = f"autostarttoken={quote(auto_start, safe='')}&amp;redirect=null"
+        launch = (f'<p><a id="bankid-launch" rel="noreferrer" href="https://app.bankid.com/?{query}">'
+                  'Open BankID</a></p>')
+    login_page = HTML.replace("<!-- launch -->", launch).encode()
     status_text = "Waiting for BankID..."
     deadline = time.monotonic() + TIMEOUT
     invite = secrets.token_urlsafe(32) if remote else None
@@ -169,7 +188,8 @@ def _login(*, remote=False):
             elif path == "/status":
                 body, content_type = status_text.encode(), "text/plain; charset=utf-8"
             elif path == "/":
-                body, content_type = (HTML if allowed else INVITE_PAGE).encode(), "text/html; charset=utf-8"
+                body = login_page if allowed else INVITE_PAGE.encode()
+                content_type = "text/html; charset=utf-8"
             else:
                 self.send_error(404)
                 return

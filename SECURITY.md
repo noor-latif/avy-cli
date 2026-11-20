@@ -14,12 +14,12 @@
 
 Remote login is an explicit opt-in for headless or remote machines. It serves
 the same loopback login page through a temporary Devhop tunnel so a phone can
-open it and scan the live BankID QR.
+open BankID on the same device or scan the live QR from another device.
 
 - Only `--remote` may be exposed. A normal `avy-login` binds `127.0.0.1` and
   must not be tunneled; do not start Devhop against a local login session.
-- The public HTTPS URL by itself cannot fetch the QR or the BankID status. The
-  invite suffix (`#…`) is a one-time bearer credential; redeeming it sets a
+- The public HTTPS URL by itself cannot fetch the BankID launch link, QR,
+  or status. The invite suffix (`#…`) is a one-time bearer credential; redeeming it sets a
   `Secure`, `HttpOnly`, `SameSite=Strict` browser cookie, valid for this login
   only, and removes the invite from the address bar. Anyone holding the
   complete URL can redeem it until then, and clients or agents that open links
@@ -29,7 +29,7 @@ open it and scan the live BankID QR.
   (`AVY_LOGIN_TIMEOUT`, 300 seconds by default). After it is consumed or
   expires, stop Devhop, start `avy-login --remote` again and use the new invite.
 - Cloudflare terminates HTTPS. Treat it and Devhop as trusted with the invite,
-  browser cookie, QR and status. The Avy account token never crosses the
+  browser cookie, BankID launch link, QR and status. The Avy account token never crosses the
   tunnel: the CLI obtains it from Avy and writes it locally with mode 0600.
 - Devhop requires no account or email address and does not create a per-user
   server; the tunnel is ephemeral. Stop Devhop when login finishes.

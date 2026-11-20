@@ -67,10 +67,10 @@ https://<generated-name>/#<invite>
 ```
 
 Open the complete URL in a regular browser, not a chat preview. The page
-unlocks automatically and displays the live QR. Scan it from another device
-with BankID and approve only if BankID names **Avy**. To use BankID on your
-phone, open the QR page on a different screen; same-device launch is not
-supported yet.
+unlocks automatically. On mobile, it tries to open BankID; if the browser
+blocks it, return to the login page and tap **Open BankID**. On desktop, scan
+the live QR with your phone. If Avy does not provide a launch link for the
+order, use the QR on another screen. Approve only if BankID names **Avy**.
 
 The invite is a bearer secret, not merely an address: without it the public URL
 shows only a placeholder and refuses to serve the QR or the BankID status. It
