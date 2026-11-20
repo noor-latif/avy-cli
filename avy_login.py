@@ -115,7 +115,7 @@ def _login(*, confirm=False):
             "to replace it.")
     request = partial(call, authenticated=False)
     state = {"order": None, "qr_path": None, "token": "", "armed_at": 0.0, "generation": 0,
-             "text": "Waiting for BankID..."}
+             "deadline": None, "text": "Waiting for BankID..."}
     state_lock = threading.Lock()
 
     def arm():
@@ -135,14 +135,19 @@ def _login(*, confirm=False):
                          qr_path="/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe=""),
                          token=auto_start if isinstance(auto_start, str) else "",
                          armed_at=time.monotonic(),
+                         deadline=state["deadline"] or time.monotonic() + TIMEOUT,
                          generation=state["generation"] + 1)
         return state["order"]
 
-    deadline = time.monotonic() + TIMEOUT
+    opened_by = time.monotonic() + TIMEOUT
 
-    def wait_for_order(generation, deadline):
+    def deadline():
+        """The login timeout runs from the first page load, not from process start."""
+        return state["deadline"] or opened_by
+
+    def wait_for_order(generation):
         """Block until the page arms an order, so the app and page never disagree."""
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline():
             with state_lock:
                 if state["generation"] != generation:
                     return True
@@ -222,11 +227,11 @@ def _login(*, confirm=False):
             print("The BankID order starts when the page loads.",
                   flush=True)
             print("Confirm that the BankID app shows Avy as the relying party.", flush=True)
-            while time.monotonic() < deadline:
+            while time.monotonic() < deadline():
                 with state_lock:
                     order, generation = state["order"], state["generation"]
                 if order is None:
-                    if not wait_for_order(generation, deadline):
+                    if not wait_for_order(generation):
                         raise SystemExit("BankID approval timed out")
                     continue
                 result = request("POST", "/v1/auth/bankid/collect", order)
@@ -246,7 +251,7 @@ def _login(*, confirm=False):
                 elif hint in EXPIRED_HINTS:
                     state["text"] = "BankID: order expired. Reload this page."
                     print(state["text"], flush=True)
-                    if not wait_for_order(generation, deadline):
+                    if not wait_for_order(generation):
                         raise SystemExit("BankID approval timed out")
                     continue
                 else:
