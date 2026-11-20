@@ -4,6 +4,9 @@ avy_token.json
 *.token
 .avy/
 
+# Local handoff notes for agents (never publish)
+.local/
+
 # Logs, captures and generated artifacts
 *.log
 *.har
