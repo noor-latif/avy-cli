@@ -123,6 +123,20 @@ python3 avy.py raw POST /v2/contact-form --body '{"form_type_id": 24, "fields": 
 - [docs/discovery.md](docs/discovery.md) — how the API was recovered from the app
 - [SKILL.md](SKILL.md) — agent-facing usage notes
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Short version:
+
+```bash
+make setup    # venv + dependencies
+make check    # tests + secret scan
+```
+
+Open a **"New landlord / integration"** issue and paste `avy form --options` if
+your landlord's case form isn't handled — that output is form structure, not
+personal data. A GitHub Codespaces devcontainer is included for one-click setup.
+Agents should read [AGENTS.md](AGENTS.md).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
