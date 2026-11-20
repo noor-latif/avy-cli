@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install qrcode pillow
+        run: pip install .
       - name: Unit tests
         run: python -m unittest discover -s tests -v
       - name: Secret scan

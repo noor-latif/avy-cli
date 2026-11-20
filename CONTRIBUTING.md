@@ -12,9 +12,9 @@ make setup          # creates .venv and installs the package
 make test           # unit tests; no network, no token needed
 ```
 
-`make test` uses the system `python3`, since the tests only need the standard
-library. Use `.venv/bin/avy` for the CLI itself. Or open the repo in GitHub
-Codespaces — the devcontainer installs the same dependencies.
+`make test` uses the active `python3`. Activate `.venv` after `make setup`
+to include the login test; without `qrcode` it is skipped. The Codespaces
+devcontainer installs the package and dependencies automatically.
 
 ## Ground rules (enforced by CI)
 

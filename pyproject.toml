@@ -9,7 +9,7 @@ description = "Unofficial CLI for the Avy resident API — report housing faults
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-dependencies = ["qrcode", "pillow"]
+dependencies = ["qrcode>=7.4"]
 
 [project.scripts]
 avy = "avy:main"

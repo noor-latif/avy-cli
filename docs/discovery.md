@@ -61,7 +61,7 @@ unlocks the rest of the API.
 - [REA](https://github.com/morluto/rea) (`inspect-apk-signature`,
   `identify-flutter-build`) and `jadx`
 - `mitmproxy` was installed but ultimately unnecessary
-- `qrcode` + `pillow` for rendering the live BankID QR
+- `qrcode` renders the live BankID QR as a local SVG without an imaging backend.
 
 ## Reproducing against another landlord
 

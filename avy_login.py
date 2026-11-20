@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Log in to Avy with your own BankID using a live QR on localhost."""
 import argparse
-import io
 import os
 import sys
 import threading
@@ -21,10 +20,10 @@ body{font-family:sans-serif;text-align:center;margin:2rem}
 img{width:360px;height:360px;image-rendering:pixelated}
 </style></head><body><h2>Avy BankID login</h2>
 <p>Scan with the BankID app and approve. The QR refreshes every second.</p>
-<img id="qr" src="/qr.png" alt="Live BankID QR code"><p id="status">Waiting...</p>
+<img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
 <script>
 const img=document.getElementById('qr');
-setInterval(()=>{img.src='/qr.png?t='+Date.now();},1000);
+setInterval(()=>{img.src='/qr.svg?t='+Date.now();},1000);
 setInterval(async()=>{const r=await fetch('/status');
 document.getElementById('status').textContent=await r.text();},2000);
 </script></body></html>"""
@@ -40,6 +39,7 @@ def main():
 
 def _login():
     import qrcode
+    from qrcode.image.svg import SvgPathFillImage
 
     request = partial(call, authenticated=False)
     auth = request("POST", "/v1/auth/bankid/auth", {})
@@ -54,7 +54,7 @@ def _login():
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             path = self.path.partition("?")[0]
-            if path == "/qr.png":
+            if path == "/qr.svg":
                 try:
                     result = request("GET", qr_path)
                     payload = result.get("qr_code") if isinstance(result, dict) else None
@@ -63,9 +63,8 @@ def _login():
                 if not payload:
                     self.send_error(502, "BankID QR unavailable")
                     return
-                buf = io.BytesIO()
-                qrcode.make(payload).save(buf, format="PNG")
-                body, content_type = buf.getvalue(), "image/png"
+                body = qrcode.make(payload, image_factory=SvgPathFillImage).to_string()
+                content_type = "image/svg+xml"
             elif path == "/status":
                 body, content_type = status_text.encode(), "text/plain; charset=utf-8"
             elif path == "/":

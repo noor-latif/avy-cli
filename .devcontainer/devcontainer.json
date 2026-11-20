@@ -1,7 +1,7 @@
 {
   "name": "avy-cli",
   "image": "mcr.microsoft.com/devcontainers/python:3.11",
-  "postCreateCommand": "pip install --quiet qrcode pillow",
+  "postCreateCommand": "pip install --quiet -e .",
   "customizations": {
     "vscode": {
       "extensions": ["ms-python.python"],
