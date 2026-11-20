@@ -254,6 +254,6 @@ class LoginTests(LoginServerTestCase):
             time.sleep(0.05)
         else:
             self.fail(f"no success message: {self.output.getvalue()!r}")
-        self.complete()
         self.assertEqual(
             json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")
+        self.complete()

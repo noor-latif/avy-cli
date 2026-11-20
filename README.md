@@ -64,8 +64,8 @@ Use Safari or Chrome rather than an in-app browser. On desktop, scan the live
 QR with your phone. Approve only if BankID names **Avy**.
 
 Opening or reloading the page reuses the current order while Avy reports it
-active. If the page says the order expired, reload to start a new one. Once
-the page says the login is complete, stop Devhop.
+active. If the page says the order expired, reload to start a new one.
+When the page says "Logged in", the CLI has already saved the session.
 
 The tunnel URL is the page's only credential; stop Devhop when the login
 finishes. The session token is written on the machine running the CLI, never in

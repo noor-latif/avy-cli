@@ -131,6 +131,7 @@ def _login(*, confirm=False):
     state = {"order": None, "qr_path": None, "token": "", "armed_at": 0.0, "generation": 0,
              "deadline": None, "error": None, "expired": False, "text": "Waiting for BankID..."}
     state_lock = threading.Condition()
+    success_seen = threading.Event()
 
     def arm():
         # Serialize order creation; two tabs must not replace an active order.
@@ -201,7 +202,8 @@ def _login(*, confirm=False):
                 body = qrcode.make(payload, image_factory=SvgPathFillImage).to_string()
                 content_type = "image/svg+xml"
             elif path == "/status":
-                body, content_type = state["text"].encode(), "text/plain; charset=utf-8"
+                text = state["text"]
+                body, content_type = text.encode(), "text/plain; charset=utf-8"
             elif path == "/launch":
                 age = round(time.monotonic() - state["armed_at"], 1) if state["order"] else None
                 body = json.dumps({"token": state["token"], "age": age}).encode()
@@ -217,6 +219,8 @@ def _login(*, confirm=False):
             self.end_headers()
             try:
                 self.wfile.write(body)
+                if path == "/status" and text.startswith("Logged in"):
+                    success_seen.set()
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
@@ -271,8 +275,14 @@ def _login(*, confirm=False):
                 result = request("POST", "/v1/auth/bankid/collect", order)
                 status = result.get("status") if isinstance(result, dict) else None
                 if status == "complete":
+                    token = request("POST", "/v1/auth/bankid/login", order)
+                    if not isinstance(token, dict) or not isinstance(token.get("token"), str) or not token["token"].strip():
+                        raise SystemExit("Avy login did not return a usable token")
+                    write_private_json(TOKEN_FILE, token)
+                    print(f"OK. Token written to {TOKEN_FILE} (mode 0600). Never commit or share it.")
                     state["text"] = "Logged in. You can close this page."
-                    time.sleep(5)
+                    # Give the page time to display success without delaying session creation.
+                    success_seen.wait(5)
                     break
                 if status not in ("pending", "failed", "cancelled"):
                     raise SystemExit("Avy returned an unknown BankID status")
@@ -299,11 +309,6 @@ def _login(*, confirm=False):
             server.shutdown()
             worker.join()
 
-    token = request("POST", "/v1/auth/bankid/login", order)
-    if not isinstance(token, dict) or not isinstance(token.get("token"), str) or not token["token"].strip():
-        raise SystemExit("Avy login did not return a usable token")
-    write_private_json(TOKEN_FILE, token)
-    print(f"OK. Token written to {TOKEN_FILE} (mode 0600). Never commit or share it.")
     try:
         label = _account_label(call("GET", "/v1/auth/profile"))
     except ApiError:
