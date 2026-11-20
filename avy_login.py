@@ -2,10 +2,12 @@
 """Log in to Avy with your own BankID using a live QR on localhost."""
 import argparse
 import os
+import secrets
 import sys
 import threading
 import time
 from functools import partial
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote
 
@@ -14,10 +16,11 @@ from avy import ApiError, CAP_FILE, TOKEN_FILE, call, refresh_capabilities, writ
 PORT = int(os.environ.get("AVY_LOGIN_PORT", "8765"))
 TIMEOUT = int(os.environ.get("AVY_LOGIN_TIMEOUT", "300"))
 
-HTML = """<!doctype html><html><head><meta charset="utf-8">
+HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Avy login</title><style>
 body{font-family:sans-serif;text-align:center;margin:2rem}
-img{width:360px;height:360px;image-rendering:pixelated}
+img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 </style></head><body><h2>Avy BankID login</h2>
 <p>Scan with the BankID app and approve. The QR refreshes every second.</p>
 <img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
@@ -28,16 +31,55 @@ setInterval(async()=>{const r=await fetch('/status');
 document.getElementById('status').textContent=await r.text();},2000);
 </script></body></html>"""
 
+INVITE_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Private Avy login</title></head><body><h1>Private Avy login</h1>
+<p id="invite-status" role="status">Open the full invite link from your terminal.
+This page needs JavaScript to open it.</p>
+<script>
+async function redeem() {
+    const status = document.getElementById('invite-status');
+    const invite = location.hash.slice(1);
+    if (!invite) return;
+    history.replaceState(null, '', '/');
+    if (!window.isSecureContext) {
+        status.textContent = 'Open your invite using HTTPS.';
+        return;
+    }
+    status.textContent = 'Opening login…';
+    try {
+        const reply = await fetch('/redeem', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/octet-stream'},
+            body: invite,
+            redirect: 'error',
+        });
+        if (reply.status === 204) {
+            location.reload();
+            return;
+        }
+    } catch (_) {}
+    status.textContent = 'This invite could not be opened. Restart avy-login for a new invite.';
+}
+window.addEventListener('hashchange', redeem);
+redeem();
+</script></body></html>"""
+
+SESSION_COOKIE = "__Host-avy-login"
+
 
 def main():
-    argparse.ArgumentParser(description=__doc__).parse_args()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--remote", action="store_true",
+                        help="require a one-time invite before displaying login over an HTTPS tunnel")
+    args = parser.parse_args()
     try:
-        _login()
+        _login(remote=args.remote)
     except (ApiError, OSError) as exc:
         raise SystemExit(str(exc)) from None
 
 
-def _login():
+def _login(*, remote=False):
     import qrcode
     from qrcode.image.svg import SvgPathFillImage
 
@@ -50,10 +92,69 @@ def _login():
     order = {"order_ref": auth["order_ref"]}
     qr_path = "/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe="")
     status_text = "Waiting for BankID..."
+    deadline = time.monotonic() + TIMEOUT
+    invite = secrets.token_urlsafe(32) if remote else None
+    session = None
+    access_lock = threading.Lock()
+    closed = threading.Event()
 
     class Handler(BaseHTTPRequestHandler):
+        timeout = 5 if remote else None
+
+        def _allowed(self):
+            if not remote:
+                return True
+            if closed.is_set() or time.monotonic() >= deadline or session is None:
+                return False
+            try:
+                cookie = SimpleCookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE)
+            except CookieError:
+                return False
+            return cookie is not None and secrets.compare_digest(
+                cookie.value.encode(), session.encode())
+
+        def do_POST(self):
+            nonlocal invite, session
+            if not remote or self.path != "/redeem":
+                self.send_error(404)
+                return
+            if (self.headers.get_all("Content-Length") != ["43"]
+                    or self.headers.get("Transfer-Encoding") is not None
+                    or self.headers.get("Content-Type") != "application/octet-stream"):
+                self.send_error(400)
+                return
+            supplied = self.rfile.read(43)
+            with access_lock:
+                if (invite is not None and not closed.is_set() and time.monotonic() < deadline
+                        and secrets.compare_digest(supplied, invite.encode())):
+                    session = secrets.token_urlsafe(32)
+                    invite = None
+                    granted = session
+                else:
+                    granted = None
+            if granted is None:
+                self.send_error(403)
+                return
+            self.send_response(204)
+            self.send_header("Set-Cookie",
+                             f"{SESSION_COOKIE}={granted}; Secure; HttpOnly; SameSite=Strict; Path=/")
+            self.end_headers()
+
+        def end_headers(self):
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; "
+                             "base-uri 'none'; img-src 'self'; connect-src 'self'; "
+                             "script-src 'unsafe-inline'; style-src 'unsafe-inline'")
+            super().end_headers()
+
         def do_GET(self):
             path = self.path.partition("?")[0]
+            allowed = self._allowed()
+            if not allowed and path != "/":
+                self.send_error(403)
+                return
             if path == "/qr.svg":
                 try:
                     result = request("GET", qr_path)
@@ -68,13 +169,15 @@ def _login():
             elif path == "/status":
                 body, content_type = status_text.encode(), "text/plain; charset=utf-8"
             elif path == "/":
-                body, content_type = HTML.encode(), "text/html; charset=utf-8"
+                body, content_type = (HTML if allowed else INVITE_PAGE).encode(), "text/html; charset=utf-8"
             else:
                 self.send_error(404)
                 return
+            if allowed and remote and not self._allowed():
+                self.send_error(403)
+                return
             self.send_response(200)
             self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -86,10 +189,14 @@ def _login():
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
-            print(f"Open http://127.0.0.1:{server.server_port}/ and scan the live QR with BankID.",
-                  flush=True)
+            if remote:
+                print(f"Protected login on port {server.server_port}. Point your HTTPS tunnel at this port.",
+                      flush=True)
+                print(f"Invite suffix: #{invite}", flush=True)
+            else:
+                print(f"Open http://127.0.0.1:{server.server_port}/ and scan the live QR with BankID.",
+                      flush=True)
             print("Confirm that the BankID app shows Avy as the relying party.", flush=True)
-            deadline = time.monotonic() + TIMEOUT
             while time.monotonic() < deadline:
                 result = request("POST", "/v1/auth/bankid/collect", order)
                 status = result.get("status") if isinstance(result, dict) else None
@@ -107,6 +214,8 @@ def _login():
             else:
                 raise SystemExit("BankID approval timed out")
         finally:
+            with access_lock:
+                closed.set()
             server.shutdown()
             worker.join()
 
