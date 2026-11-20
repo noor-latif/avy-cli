@@ -36,8 +36,11 @@ setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
 document.getElementById('status').textContent=t;
 if(t==='BankID: retrying'){history.replaceState({},'');location.replace('/');}},2000);
 const launch = document.getElementById('bankid-launch');
-const mobile = /iPhone|iPad|iPod|Android/.test(navigator.userAgent)
+const agent = navigator.userAgent;
+const mobile = /iPhone|iPad|iPod|Android/.test(agent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const inApp = /FBAN|FBAV|Instagram|Line\\/|WhatsApp|Slack|Twitter|Puffin|GSA\\//.test(agent)
+    || (/iPhone|iPad/.test(agent) && !/Safari|CriOS|FxiOS|EdgiOS/.test(agent));
 async function openBankID(event, token) {
     if (event) event.preventDefault();
     if (!token) {
@@ -54,9 +57,14 @@ async function openBankID(event, token) {
 }
 if (launch) {
     launch.addEventListener('click', openBankID);
-    fetch('/launch').then(r => r.json()).then(({token, age}) => {
-        if (mobile && age < 5 && !location.hash) openBankID(null, token);
-    }).catch(() => {});
+    if (inApp) {
+        document.getElementById('status').textContent =
+            'This browser cannot hand off to BankID. Open this page in Safari or Chrome first.';
+    } else {
+        fetch('/launch').then(r => r.json()).then(({token, age}) => {
+            if (mobile && age < 5 && !location.hash) openBankID(null, token);
+        }).catch(() => {});
+    }
 }
 </script></body></html>"""
 
