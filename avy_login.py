@@ -31,46 +31,41 @@ img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 <img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
 <script>
 const img=document.getElementById('qr');
-img.onerror=()=>{document.getElementById('status').textContent='QR expired. Tap Open BankID.';};
+img.onerror=()=>{document.getElementById('status').textContent='QR expired. Reload this page.';};
 setInterval(()=>{img.src='/qr.svg?t='+Date.now();},1000);
 const poll=setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
 document.getElementById('status').textContent=t;
 if(t==='BankID: retrying'){history.replaceState({},'');location.replace('/');}
 if(t.startsWith('Logged in')){clearInterval(poll);}},2000);
 const launch = document.getElementById('bankid-launch');
+const web = document.getElementById('bankid-web');
 const agent = navigator.userAgent;
 const mobile = /iPhone|iPad|iPod|Android/.test(agent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const inApp = /FBAN|FBAV|Instagram|Line\\/|WhatsApp|Slack|Twitter|Puffin|GSA\\//.test(agent)
     || (/iPhone|iPad/.test(agent) && !/Safari|CriOS|FxiOS|EdgiOS/.test(agent));
-async function openBankID(event, viaWeb) {
-    if (event) event.preventDefault();
-    let token;
+const scheme = token => 'bankid:///?autostarttoken=' + encodeURIComponent(token)
+    + '&redirect=' + encodeURIComponent(mobile ? location.origin + '/#bankid' : 'null');
+async function arm() {
     try {
-        const current = await (await fetch('/launch')).json();
-        token = current.age > 25 ? '' : current.token;
-        if (!token) {
-            const reply = await fetch('/rearm', {method: 'POST'});
-            if (!reply.ok) return;
-            token = (await reply.json()).token;
-        }
-    } catch (_) { return; }
-    const query = 'autostarttoken=' + encodeURIComponent(token)
-        + '&redirect=' + encodeURIComponent(mobile ? location.origin + '/#bankid' : 'null');
-    const target = viaWeb
-        ? 'https://app.bankid.com/?' + query
-        : 'bankid:///?' + query;
-    launch.href = target;
-    location.assign(target);
+        const info = await (await fetch('/launch')).json();
+        if (info.token && info.age <= 25) return info.token;
+        return (await (await fetch('/rearm', {method: 'POST'})).json()).token;
+    } catch (_) { return null; }
 }
 if (launch) {
-    launch.addEventListener('click', openBankID);
-    document.getElementById('bankid-web').addEventListener('click', event => openBankID(event, true));
+    const ready = arm().then(token => {
+        if (!token) return null;
+        const url = scheme(token);
+        launch.href = url;
+        web.href = url.replace('bankid:///?', 'https://app.bankid.com/?');
+        return url;
+    });
     if (inApp) {
         document.getElementById('status').textContent =
             'This browser cannot hand off to BankID. Open this page in Safari or Chrome first.';
-    } else {
-        if (mobile && !location.hash) openBankID();
+    } else if (mobile && !location.hash) {
+        ready.then(url => { if (url) location.assign(url); });
     }
 }
 </script></body></html>"""
@@ -126,8 +121,8 @@ def _login(*, confirm=False):
     def arm():
         """Ask Avy for an order; the app must start it within about 30 seconds.
 
-        Called at startup and when the page asks for one, never on a timer: two live
-        orders would let the app approve one while the page polls the other.
+        Only the page arms one, never a timer: the clock starts when a person has the
+        page open, and a second live order would let the app approve the wrong one.
         """
         auth = request("POST", "/v1/auth/bankid/auth", {})
         if not isinstance(auth, dict) or not all(
@@ -143,11 +138,10 @@ def _login(*, confirm=False):
                          generation=state["generation"] + 1)
         return state["order"]
 
-    order = arm()
     deadline = time.monotonic() + TIMEOUT
 
-    def wait_for_rearm(generation, deadline):
-        """Block until the page asks for a new order, so the app and page never disagree."""
+    def wait_for_order(generation, deadline):
+        """Block until the page arms an order, so the app and page never disagree."""
         while time.monotonic() < deadline:
             with state_lock:
                 if state["generation"] != generation:
@@ -171,6 +165,8 @@ def _login(*, confirm=False):
             path = self.path.partition("?")[0]
             if path == "/qr.svg":
                 try:
+                    if state["qr_path"] is None:
+                        raise ApiError("no order armed")
                     result = request("GET", state["qr_path"])
                     payload = result.get("qr_code") if isinstance(result, dict) else None
                 except ApiError:
@@ -183,8 +179,8 @@ def _login(*, confirm=False):
             elif path == "/status":
                 body, content_type = state["text"].encode(), "text/plain; charset=utf-8"
             elif path == "/launch":
-                body = json.dumps({"token": state["token"],
-                                   "age": round(time.monotonic() - state["armed_at"], 1)}).encode()
+                age = round(time.monotonic() - state["armed_at"], 1) if state["order"] else None
+                body = json.dumps({"token": state["token"], "age": age}).encode()
                 content_type = "application/json"
             elif path == "/":
                 body, content_type = HTML.encode(), "text/html; charset=utf-8"
@@ -223,10 +219,16 @@ def _login(*, confirm=False):
                   flush=True)
             print("To log in from a phone, tunnel this port and open the tunnel URL there.",
                   flush=True)
+            print("The BankID order starts when the page loads.",
+                  flush=True)
             print("Confirm that the BankID app shows Avy as the relying party.", flush=True)
             while time.monotonic() < deadline:
                 with state_lock:
                     order, generation = state["order"], state["generation"]
+                if order is None:
+                    if not wait_for_order(generation, deadline):
+                        raise SystemExit("BankID approval timed out")
+                    continue
                 result = request("POST", "/v1/auth/bankid/collect", order)
                 status = result.get("status") if isinstance(result, dict) else None
                 if status == "complete":
@@ -242,9 +244,9 @@ def _login(*, confirm=False):
                         state["text"] = text
                         print(text, flush=True)
                 elif hint in EXPIRED_HINTS:
-                    state["text"] = "BankID: order expired. Tap Open BankID."
+                    state["text"] = "BankID: order expired. Reload this page."
                     print(state["text"], flush=True)
-                    if not wait_for_rearm(generation, deadline):
+                    if not wait_for_order(generation, deadline):
                         raise SystemExit("BankID approval timed out")
                     continue
                 else:

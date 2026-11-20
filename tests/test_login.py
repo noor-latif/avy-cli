@@ -60,7 +60,7 @@ class SyntheticAvy:
 
 @unittest.skipUnless(importlib.util.find_spec("qrcode"), "login dependency not installed")
 class LoginServerTestCase(unittest.TestCase):
-    def start(self, *, collect=(("cancelled", ""),), token=None, confirm=False):
+    def start(self, *, collect=(("cancelled", ""),), token=None, confirm=False, arm=True):
         """Run _login on a real loopback server bound to an ephemeral port."""
         self.done = threading.Event()
         self.port = Future()
@@ -89,7 +89,10 @@ class LoginServerTestCase(unittest.TestCase):
         pool = stack.enter_context(ThreadPoolExecutor())
         self.login = pool.submit(avy_login._login, confirm=confirm)
         self.addCleanup(self.finish)
-        return self.port.result(timeout=5)
+        port = self.port.result(timeout=5)
+        if arm:
+            self.request("POST", "/rearm")
+        return port
 
     def finish(self):
         self.done.set()
@@ -123,7 +126,7 @@ class LoginServerTestCase(unittest.TestCase):
 
 class LoginTests(LoginServerTestCase):
     def test_page_serves_qr_status_and_launch_link(self):
-        self.start()
+        self.start(arm=False)
         status, headers, body = self.request("GET", "/")
         self.assertEqual(status, 200)
         self.assertEqual(self.header(headers, "Content-Type"), "text/html; charset=utf-8")
@@ -132,17 +135,24 @@ class LoginTests(LoginServerTestCase):
         self.assertIn(b'id="bankid-launch"', body)
         self.assertNotIn(b"synthetic-launch", body)
 
-        status, headers, body = self.request("GET", "/launch")
+        status, _, body = self.request("GET", "/launch")
         self.assertEqual(status, 200)
-        self.assertEqual(self.header(headers, "Content-Type"), "application/json")
-        launch = json.loads(body)
-        self.assertEqual(launch["token"], "synthetic-launch&value")
-        self.assertGreaterEqual(launch["age"], 0)
+        self.assertEqual(json.loads(body), {"token": "", "age": None})
+        self.assertEqual(self.avy.orders, 0, "nothing is armed until the page asks")
+
+        status, _, _ = self.request("GET", "/qr.svg")
+        self.assertEqual(status, 502, "no QR before an order exists")
 
         status, headers, body = self.request("POST", "/rearm")
         self.assertEqual(status, 200)
+        self.assertEqual(self.header(headers, "Content-Type"), "application/json")
         self.assertEqual(json.loads(body)["token"], "synthetic-launch&value")
-        self.assertEqual(self.avy.orders, 2, "a tap after expiry arms exactly one new order")
+        self.assertEqual(self.avy.orders, 1)
+
+        status, _, body = self.request("GET", "/launch")
+        launch = json.loads(body)
+        self.assertEqual(launch["token"], "synthetic-launch&value")
+        self.assertGreaterEqual(launch["age"], 0)
 
         images = []
         for tick in (1, 2):

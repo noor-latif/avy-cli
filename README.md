@@ -63,11 +63,12 @@ nothing happens, tap **BankID did not open?** for BankID's own handoff page. A
 chat webview cannot hand off at all, so open the link in Safari or Chrome. On
 desktop, scan the live QR with your phone. Approve only if BankID names **Avy**.
 
-Avy's BankID order has to be started within about 30 seconds. Tapping **Open
-BankID** reuses the current order while it is fresh and arms one new order when
-it has expired, so only one order is ever live and the app always approves the
-same one the page is polling. If the page says the order expired, tap again.
-Once the page says the login is complete, stop Devhop.
+Each page load arms exactly one BankID order, so the app always approves the
+same one the page is polling. The order lasts about 30 seconds: if the page says
+it expired, reload the page and a fresh one is armed. **Open BankID** is a plain
+`bankid://` link, which is what makes it work in Safari and Chrome alike; the
+browser opens the app itself when the page loads, and a tap always works. Once
+the page says the login is complete, stop Devhop.
 
 The tunnel URL is the page's only credential; stop Devhop when the login
 finishes. The session token is written on the machine running the CLI, never in
