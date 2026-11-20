@@ -129,9 +129,15 @@ class LoginTests(LoginServerTestCase):
         self.assertEqual(self.header(headers, "Content-Type"), "text/html; charset=utf-8")
         self.assertEqual(self.header(headers, "Cache-Control"), "no-store")
         self.assertIn(b'src="/qr.svg"', body)
-        self.assertIn(b'data-token="synthetic-launch%26value"', body)
-        self.assertIn(b'href="https://app.bankid.com/?autostarttoken=synthetic-launch%26value'
-                      b'&amp;redirect=null"', body)
+        self.assertIn(b'id="bankid-launch"', body)
+        self.assertNotIn(b"synthetic-launch", body)
+
+        status, headers, body = self.request("GET", "/launch")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.header(headers, "Content-Type"), "application/json")
+        launch = json.loads(body)
+        self.assertEqual(launch["token"], "synthetic-launch&value")
+        self.assertGreaterEqual(launch["age"], 0)
 
         images = []
         for tick in (1, 2):

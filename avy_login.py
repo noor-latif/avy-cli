@@ -26,7 +26,7 @@ body{font-family:sans-serif;text-align:center;margin:2rem}
 img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 </style></head><body><h2>Avy BankID login</h2>
 <p>Approve only if the BankID app shows <strong>Avy</strong>.</p>
-<!-- launch -->
+<p><a id="bankid-launch" rel="noreferrer" href="https://app.bankid.com/">Open BankID</a></p>
 <p>On another device, scan the live QR with the BankID app.</p>
 <img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
 <script>
@@ -36,21 +36,27 @@ setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
 document.getElementById('status').textContent=t;
 if(t==='BankID: retrying'){history.replaceState({},'');location.replace('/');}},2000);
 const launch = document.getElementById('bankid-launch');
-if (launch) {
-    const token = encodeURIComponent(launch.dataset.token);
-    const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
-        || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    const android = /Android/.test(navigator.userAgent);
-    if (ios || android) {
-        launch.href = 'https://app.bankid.com/?autostarttoken=' + token
-            + '&redirect=' + encodeURIComponent(location.origin + '/#bankid');
-        if (!location.hash && !history.state?.bankidAttempted) {
-            history.replaceState({bankidAttempted: true}, '');
-            location.assign(launch.href);
-        }
-    } else {
-        launch.href = 'bankid:///?autostarttoken=' + token + '&redirect=null';
+const mobile = /iPhone|iPad|iPod|Android/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+async function openBankID(event, token) {
+    if (event) event.preventDefault();
+    if (!token) {
+        try {
+            token = (await (await fetch('/launch')).json()).token;
+        } catch (_) { return; }
     }
+    const target = mobile
+        ? 'https://app.bankid.com/?autostarttoken=' + encodeURIComponent(token)
+            + '&redirect=' + encodeURIComponent(location.origin + '/#bankid')
+        : 'bankid:///?autostarttoken=' + encodeURIComponent(token) + '&redirect=null';
+    launch.href = target;
+    location.assign(target);
+}
+if (launch) {
+    launch.addEventListener('click', openBankID);
+    fetch('/launch').then(r => r.json()).then(({token, age}) => {
+        if (mobile && age < 5 && !location.hash) openBankID(null, token);
+    }).catch(() => {});
 }
 </script></body></html>"""
 
@@ -98,7 +104,8 @@ def _login(*, confirm=False):
             f"{TOKEN_FILE} holds a session that has not expired; run avy-login --confirm "
             "to replace it.")
     request = partial(call, authenticated=False)
-    state = {"order": None, "qr_path": None, "launch": "", "text": "Waiting for BankID..."}
+    state = {"order": None, "qr_path": None, "token": "", "armed_at": 0.0,
+             "text": "Waiting for BankID..."}
     state_lock = threading.Lock()
 
     def arm():
@@ -108,17 +115,12 @@ def _login(*, confirm=False):
             isinstance(auth.get(key), str) and auth[key] for key in ("order_ref", "qr_start_token")
         ):
             raise SystemExit("Avy did not return a BankID order and QR token")
-        launch = ""
         auto_start = auth.get("auto_start_token")
-        if isinstance(auto_start, str) and auto_start.strip():
-            token = quote(auto_start, safe="")
-            launch = (f'<p><a id="bankid-launch" rel="noreferrer" data-token="{token}" '
-                      f'href="https://app.bankid.com/?autostarttoken={token}&amp;redirect=null">'
-                      'Open BankID</a></p>')
         with state_lock:
             state.update(order={"order_ref": auth["order_ref"]},
                          qr_path="/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe=""),
-                         launch=launch)
+                         token=auto_start if isinstance(auto_start, str) else "",
+                         armed_at=time.monotonic())
         return state["order"]
 
     order = arm()
@@ -151,9 +153,12 @@ def _login(*, confirm=False):
                 content_type = "image/svg+xml"
             elif path == "/status":
                 body, content_type = state["text"].encode(), "text/plain; charset=utf-8"
+            elif path == "/launch":
+                body = json.dumps({"token": state["token"],
+                                   "age": round(time.monotonic() - state["armed_at"], 1)}).encode()
+                content_type = "application/json"
             elif path == "/":
-                body = HTML.replace("<!-- launch -->", state["launch"]).encode()
-                content_type = "text/html; charset=utf-8"
+                body, content_type = HTML.encode(), "text/html; charset=utf-8"
             else:
                 self.send_error(404)
                 return
