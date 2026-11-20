@@ -8,6 +8,8 @@ AVY_TOKEN_FILE (default ~/.avy/token.json) with mode 0600.
 
 Requires: pip install qrcode pillow
 """
+import base64
+import datetime
 import io
 import json
 import os
@@ -25,6 +27,7 @@ API_BASE = os.environ.get("AVY_API_BASE", "https://api.avy.se/api")
 TOKEN_FILE = Path(os.environ.get("AVY_TOKEN_FILE", "~/.avy/token.json")).expanduser()
 PORT = int(os.environ.get("AVY_LOGIN_PORT", "8765"))
 TIMEOUT = int(os.environ.get("AVY_LOGIN_TIMEOUT", "300"))
+CAP_FILE = Path(os.environ.get("AVY_CAPABILITIES_FILE", "~/.avy/capabilities.json")).expanduser()
 
 HTML = """<!doctype html><html><head><meta charset="utf-8">
 <title>Avy login</title><style>
@@ -123,6 +126,60 @@ def main():
     TOKEN_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
     print(f"OK. Token written to {TOKEN_FILE} (mode 0600).")
     print("Treat it as a password; never commit or share it.")
+
+    save_capabilities(token["token"])
+
+
+def save_capabilities(bearer):
+    """Record enabled features once, so later sessions need no re-probing.
+
+    Stores no personal data: only feature flags, form type names/ids and the
+    token expiry timestamp. Never stores the token itself.
+    """
+    def authed(path):
+        req = urllib.request.Request(
+            API_BASE + path, headers={"Authorization": "Bearer " + bearer,
+                                      "Accept": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.load(resp)
+
+    expires = None
+    try:
+        segment = bearer.split(".")[1]
+        segment += "=" * (-len(segment) % 4)
+        expires = json.loads(base64.urlsafe_b64decode(segment)).get("exp")
+    except (IndexError, ValueError):
+        pass
+
+    data = {
+        "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "token_expires_at": (
+            datetime.datetime.fromtimestamp(expires, datetime.timezone.utc).isoformat()
+            if expires else None
+        ),
+    }
+    try:
+        features = authed("/v1/features")
+        data["flags"] = sorted(features.get("flags", []))
+        data["config_keys"] = sorted((features.get("config") or {}).keys())
+    except Exception as exc:
+        data["flags_error"] = str(exc)
+    try:
+        data["form_types"] = [
+            {"form_type_id": t.get("form_type_id"), "name": t.get("name")}
+            for t in authed("/v2/contact-form/type")
+        ]
+    except Exception as exc:
+        data["form_types_error"] = str(exc)
+
+    try:
+        CAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CAP_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        CAP_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        print(f"Capability map saved to {CAP_FILE}")
+    except OSError as exc:
+        print(f"Warning: could not save capability map: {exc}")
 
 
 if __name__ == "__main__":

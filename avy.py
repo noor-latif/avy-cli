@@ -14,15 +14,19 @@ Configuration (environment variables):
   AVY_API_BASE     API base URL (default: https://api.avy.se/api)
 """
 import argparse
+import base64
+import datetime
 import json
 import os
 import re
+import stat
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 API_BASE = os.environ.get("AVY_API_BASE", "https://api.avy.se/api")
 TOKEN_FILE = Path(os.environ.get("AVY_TOKEN_FILE", "~/.avy/token.json")).expanduser()
+CAP_FILE = Path(os.environ.get("AVY_CAPABILITIES_FILE", "~/.avy/capabilities.json")).expanduser()
 
 TEXT_TYPES = {"textarea", "text", "string", "number", "date", "email", "tel"}
 KEY_HINTS = re.compile(r"(key|nyckel|access|other|tilltrade)", re.I)
@@ -147,6 +151,44 @@ def select_form_type(explicit=None):
     return visible[0]["form_type_id"]
 
 
+def capabilities(refresh=False):
+    """Show the locally cached capability map, or rebuild it from the API."""
+    if refresh:
+        data = {
+            "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "token_expires_at": None,
+        }
+        token = get_token()
+        try:
+            segment = token.split(".")[1]
+            segment += "=" * (-len(segment) % 4)
+            exp = json.loads(base64.urlsafe_b64decode(segment)).get("exp")
+            if exp:
+                data["token_expires_at"] = datetime.datetime.fromtimestamp(
+                    exp, datetime.timezone.utc).isoformat()
+        except (IndexError, ValueError):
+            pass
+        try:
+            data["flags"] = sorted(call("GET", "/v1/features").get("flags", []))
+        except Exception as exc:
+            data["flags_error"] = str(exc)
+        try:
+            data["form_types"] = [
+                {"form_type_id": t.get("form_type_id"), "name": t.get("name")}
+                for t in call("GET", "/v2/contact-form/type")
+            ]
+        except Exception as exc:
+            data["form_types_error"] = str(exc)
+        CAP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CAP_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
+        CAP_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        print(f"Refreshed {CAP_FILE}")
+    try:
+        emit(json.loads(CAP_FILE.read_text()))
+    except (OSError, ValueError):
+        raise SystemExit(f"No capability map at {CAP_FILE}. Run avy-login.py or avy capabilities --refresh.")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -156,6 +198,8 @@ def main():
     sub.add_parser("cases", help="list existing cases")
     sub.add_parser("case-types", help="list available case form types")
     sub.add_parser("invoices", help="list invoices")
+    caps = sub.add_parser("capabilities", help="show locally cached enabled features")
+    caps.add_argument("--refresh", action="store_true", help="rebuild from the API")
 
     form = sub.add_parser("form", help="show a case form schema")
     form.add_argument("--type", type=int, help="form type id (default: first visible)")
@@ -184,6 +228,8 @@ def main():
         emit(call("GET", "/v2/contact-form"))
     elif args.cmd == "case-types":
         emit(call("GET", "/v2/contact-form/type"))
+    elif args.cmd == "capabilities":
+        capabilities(refresh=args.refresh)
     elif args.cmd == "invoices":
         emit(call("GET", "/v1/invoice"))
     elif args.cmd == "form":

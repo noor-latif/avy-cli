@@ -39,6 +39,16 @@ Notes:
   `/v1/auth/magic-link/login` (`magic_link_token`). Availability depends on
   what the landlord enabled.
 
+## Capability discovery
+
+`GET /v1/features` returns `flags` (enabled features such as `invoiceTab`,
+`messageTab`, `contact_form_v2`, `email_login`) and a `config` object of
+branding/template keys. `GET /v2/contact-form/type` lists available case forms.
+This project captures both into `~/.avy/capabilities.json` at first login; the
+cache contains no personal data and no token. Note that a flag does not
+guarantee an endpoint works — individual features can still return
+`403 feature not available`.
+
 ## Endpoint map
 
 Selected paths recovered from the app binary:

@@ -42,11 +42,19 @@ app shows **Avy** as the relying party before approving.
 The session token is written to `~/.avy/token.json` with mode `0600`. Treat it
 like a password. Re-run the login helper whenever it expires.
 
+**On first login**, the helper also records which features your landlord has
+enabled in `~/.avy/capabilities.json` (mode `0600`): feature flags, available
+case form types and the token expiry. No personal data and no token are stored
+there. View it with `avy capabilities`, or rebuild it at any time with
+`avy capabilities --refresh`. Future sessions — including agents — can read
+this file instead of re-probing the API.
+
 Override paths/ports with environment variables:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `AVY_TOKEN_FILE` | `~/.avy/token.json` | where the token is stored |
+| `AVY_CAPABILITIES_FILE` | `~/.avy/capabilities.json` | cached capability map |
 | `AVY_API_BASE` | `https://api.avy.se/api` | API base URL |
 | `AVY_LOGIN_PORT` | `8765` | local login page port |
 | `AVY_LOGIN_TIMEOUT` | `300` | seconds to wait for approval |

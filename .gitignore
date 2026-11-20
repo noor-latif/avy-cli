@@ -1,6 +1,7 @@
 # Credentials and personal data
 token.json
 avy_token.json
+capabilities.json
 *.token
 .avy/
 

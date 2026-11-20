@@ -39,6 +39,9 @@ python3 avy.py raw GET /v1/message/list
   `form --options` to find a field UUID, then override it with
   `--set '<field-uuid>=<option label or uuid>'` when a dry run picks the wrong
   value. Option UUID, external ID and label are all accepted.
+- Read `~/.avy/capabilities.json` (or run `avy capabilities`) first to see
+  which features the landlord enabled and which form types exist. Use
+  `avy capabilities --refresh` to rebuild it; no personal data is stored.
 - Never print, log or commit the token. Never paste `tenants`/`invoices` output
   into shared channels: it contains personal data.
 - A 401 means the token expired: ask the user to run `avy-login.py` again.
