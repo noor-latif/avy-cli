@@ -28,13 +28,14 @@ img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 <p><a id="bankid-launch" rel="noreferrer" href="https://app.bankid.com/">Open BankID</a>
 <a id="bankid-web" href="https://app.bankid.com/">BankID did not open?</a></p>
 <p>On another device, scan the live QR with the BankID app.</p>
-<img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
+<img id="qr" alt="Live BankID QR code"><p id="status">Waiting...</p>
 <script>
 const img=document.getElementById('qr');
 const label=document.getElementById('status');
-let finished=false;
-img.onerror=()=>{if(!finished)label.textContent='QR expired. Reload this page.';};
-const qr=setInterval(()=>{if(!finished)img.src='/qr.svg?t='+Date.now();},1000);
+let finished=false, armed=false, seen=false;
+img.onload=()=>{seen=true;};
+img.onerror=()=>{if(seen&&!finished)label.textContent='QR expired. Reload this page.';};
+const qr=setInterval(()=>{if(armed&&!finished)img.src='/qr.svg?t='+Date.now();},1000);
 const poll=setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
 label.textContent=t;
 if(t.startsWith('Logged in')){
@@ -46,30 +47,34 @@ const web = document.getElementById('bankid-web');
 const agent = navigator.userAgent;
 const mobile = /iPhone|iPad|iPod|Android/.test(agent)
     || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-const inApp = /FBAN|FBAV|Instagram|Line\\/|WhatsApp|Slack|Twitter|Puffin|GSA\\//.test(agent)
+const inApp = /FBAN|FBAV|Instagram|Line\\/|WhatsApp|Slack|Twitter|Puffin|GSA\\/|; wv\\)/.test(agent)
     || (/iPhone|iPad/.test(agent) && !/Safari|CriOS|FxiOS|EdgiOS/.test(agent));
 const scheme = token => 'bankid:///?autostarttoken=' + encodeURIComponent(token)
     + '&redirect=' + encodeURIComponent(mobile ? location.origin + '/#bankid' : 'null');
+const returning = location.hash === '#bankid';
+if (returning) history.replaceState(null, '', location.pathname);
 async function arm() {
     try {
         const info = await (await fetch('/launch')).json();
-        if (info.token && info.age <= 25) return info.token;
+        if (info.token && (returning || info.age <= 25)) return info.token;
         return (await (await fetch('/rearm', {method: 'POST'})).json()).token;
     } catch (_) { return null; }
 }
 if (launch) {
-    const ready = arm().then(token => {
-        if (!token) return null;
-        const url = scheme(token);
-        launch.href = url;
-        web.href = url.replace('bankid:///?', 'https://app.bankid.com/?');
-        return url;
-    });
     if (inApp) {
-        document.getElementById('status').textContent =
+        label.textContent =
             'This browser cannot hand off to BankID. Open this page in Safari or Chrome first.';
-    } else if (mobile && !location.hash) {
-        ready.then(url => { if (url) location.assign(url); });
+    } else {
+        const ready = arm().then(token => {
+            if (!token) return null;
+            const url = scheme(token);
+            launch.href = url;
+            web.href = url.replace('bankid:///?', 'https://app.bankid.com/?');
+            armed = true;
+            img.src = '/qr.svg';
+            return url;
+        });
+        if (mobile && !returning) ready.then(url => { if (url) location.assign(url); });
     }
 }
 </script></body></html>"""
@@ -91,7 +96,9 @@ def _live_session():
         token = json.loads(TOKEN_FILE.read_text(encoding="utf-8"))["token"]
     except (OSError, KeyError, TypeError, ValueError):
         return False
-    expires = token_expiry(token) if isinstance(token, str) else None
+    if not isinstance(token, str) or not token.strip():
+        return False
+    expires = token_expiry(token)
     if expires is None:
         return True
     return datetime.datetime.fromisoformat(expires) > datetime.datetime.now(datetime.timezone.utc)
@@ -119,7 +126,7 @@ def _login(*, confirm=False):
             "to replace it.")
     request = partial(call, authenticated=False)
     state = {"order": None, "qr_path": None, "token": "", "armed_at": 0.0, "generation": 0,
-             "deadline": None, "text": "Waiting for BankID..."}
+             "deadline": None, "error": None, "text": "Waiting for BankID..."}
     state_lock = threading.Lock()
 
     def arm():
@@ -153,7 +160,7 @@ def _login(*, confirm=False):
         """Block until the page arms an order, so the app and page never disagree."""
         while time.monotonic() < deadline():
             with state_lock:
-                if state["generation"] != generation:
+                if state["error"] or state["generation"] != generation:
                     return True
             time.sleep(0.5)
         return False
@@ -209,7 +216,21 @@ def _login(*, confirm=False):
             if self.path.partition("?")[0] != "/rearm":
                 self.send_error(404)
                 return
-            arm()
+            try:
+                arm()
+            except (ApiError, SystemExit) as exc:
+                with state_lock:
+                    state["error"] = str(exc)
+                body = b'{"error":"could not start a BankID order"}'
+                self.send_response(502)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             body = json.dumps({"token": state["token"]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -234,6 +255,9 @@ def _login(*, confirm=False):
             while time.monotonic() < deadline():
                 with state_lock:
                     order, generation = state["order"], state["generation"]
+                    error = state["error"]
+                if error:
+                    raise SystemExit(error)
                 if order is None:
                     if not wait_for_order(generation):
                         raise SystemExit("BankID approval timed out")

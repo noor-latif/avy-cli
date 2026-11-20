@@ -34,12 +34,17 @@ class SyntheticAvy:
         self.collect = iter(collect)
         self.last = collect[-1]
         self.orders = 0
+        self.auth_error = None
+        self.collected = []
+        self.logged_in_with = None
         self.collecting = threading.Event()
 
     def __call__(self, method, path, body=None, *, authenticated=True):
         if path.startswith("/v1/auth/bankid/") and authenticated:
             raise AssertionError(f"BankID call must not be authenticated: {path}")
         if path == "/v1/auth/bankid/auth":
+            if self.auth_error:
+                raise avy_login.ApiError(self.auth_error, {})
             self.orders += 1
             return {"order_ref": f"fixture-order-{self.orders}", "qr_start_token": "fixture-qr",
                     "auto_start_token": "synthetic-launch&value"}
@@ -47,11 +52,13 @@ class SyntheticAvy:
             return {"qr_code": next(self.frames)}
         if path == "/v1/auth/bankid/collect":
             self.collecting.set()
+            self.collected.append(body["order_ref"])
             status, hint = next(self.collect, self.last)
             if status == "cancelled":
                 self.done.wait(5)
             return {"status": status, "hint_code": hint}
         if path == "/v1/auth/bankid/login":
+            self.logged_in_with = body["order_ref"]
             return {"token": "synthetic-token"}
         if authenticated and path == "/v1/auth/profile":
             return {"name": "Synthetic Person"}
@@ -63,6 +70,7 @@ class LoginServerTestCase(unittest.TestCase):
     def start(self, *, collect=(("cancelled", ""),), token=None, confirm=False, arm=True):
         """Run _login on a real loopback server bound to an ephemeral port."""
         self.done = threading.Event()
+        self.expect = "cancelled"
         self.port = Future()
         self.frames = (f"synthetic frame {n}" for n in itertools.count(1))
         self.output = io.StringIO()
@@ -99,7 +107,7 @@ class LoginServerTestCase(unittest.TestCase):
         try:
             self.login.result(timeout=5)
         except SystemExit as exc:
-            self.assertIn("cancelled", str(exc))
+            self.assertIn(self.expect, str(exc))
 
     def complete(self):
         """Let collect finish with status=complete and wait for the token to be written."""
@@ -131,7 +139,8 @@ class LoginTests(LoginServerTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.header(headers, "Content-Type"), "text/html; charset=utf-8")
         self.assertEqual(self.header(headers, "Cache-Control"), "no-store")
-        self.assertIn(b'src="/qr.svg"', body)
+        self.assertIn(b'id="qr"', body)
+        self.assertIn(b"img.src = '/qr.svg'", body, "the QR starts only after an order is armed")
         self.assertIn(b'id="bankid-launch"', body)
         self.assertNotIn(b"synthetic-launch", body)
 
@@ -209,5 +218,33 @@ class LoginTests(LoginServerTestCase):
         self.request("POST", "/rearm")
         self.complete()
         self.assertEqual(self.avy.orders, 2)
+        self.assertEqual(self.avy.collected, ["fixture-order-1", "fixture-order-2"],
+                         "the loop must switch to the order the page armed")
+        self.assertEqual(self.avy.logged_in_with, "fixture-order-2")
+        self.assertEqual(
+            json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")
+
+    def test_failed_rearm_ends_the_wait_with_a_message(self):
+        self.start(arm=False)
+        self.avy.auth_error = "Avy returned HTTP 500"
+        self.expect = "Avy returned HTTP 500"
+        status, _, body = self.request("POST", "/rearm")
+        self.assertEqual(status, 502)
+        self.assertNotIn(b"synthetic-launch", body)
+        with self.assertRaises(SystemExit) as raised:
+            self.login.result(timeout=10)
+        self.assertIn("Avy returned HTTP 500", str(raised.exception))
+        self.done.set()
+
+    def test_success_message_is_served_before_the_server_stops(self):
+        self.start(collect=(("complete", ""),))
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if b"Logged in" in self.request("GET", "/status")[2]:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(f"no success message: {self.output.getvalue()!r}")
+        self.complete()
         self.assertEqual(
             json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")

@@ -43,8 +43,8 @@ Read it with `avy capabilities`; rebuild it with `--refresh`.
 
 ### Log in from your phone
 
-The login page binds `127.0.0.1`. To open it from a phone that is not on the
-same network, tunnel the port it prints, from the same host:
+The login page binds `127.0.0.1`, so a phone always needs a tunnel, even on the
+same Wi-Fi. From the same host:
 
 ```bash
 avy-login
