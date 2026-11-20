@@ -1,148 +1,145 @@
 #!/usr/bin/env python3
-"""CLI for the Avy resident API.
-
-Unofficial. Uses undocumented endpoints. Your BankID approval is still
-required to obtain a token; this tool never bypasses BankID.
-
-Case forms are discovered dynamically from the live schema: field UUIDs,
-option trees, parent dependencies and landlord-specific field sources are all
-read at runtime, so this works across different Avy connected systems.
-
-Configuration (environment variables):
-  AVY_TOKEN_FILE   path to the JSON file written by avy-login.py
-                   (default: ~/.avy/token.json, created with mode 0600)
-  AVY_API_BASE     API base URL (default: https://api.avy.se/api)
-"""
+"""Unofficial Avy resident CLI. Login requires your own BankID approval."""
 import argparse
 import base64
 import datetime
 import json
 import os
 import re
-import stat
+import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-API_BASE = os.environ.get("AVY_API_BASE", "https://api.avy.se/api")
+API_BASE = os.environ.get("AVY_API_BASE", "https://api.avy.se/api").rstrip("/")
 TOKEN_FILE = Path(os.environ.get("AVY_TOKEN_FILE", "~/.avy/token.json")).expanduser()
 CAP_FILE = Path(os.environ.get("AVY_CAPABILITIES_FILE", "~/.avy/capabilities.json")).expanduser()
 
-TEXT_TYPES = {"textarea", "text", "string", "number", "date", "email", "tel"}
-KEY_HINTS = re.compile(r"(key|nyckel|access|other|tilltrade)", re.I)
+KEY_HINTS = re.compile(r"(key|nyckel|access|tilltr[aä]de|(?:\b|_)other\b)", re.I)
+READ_COMMANDS = {
+    "profile": ("/v1/auth/profile", "current tenant profile"),
+    "tenants": ("/v1/tenants", "tenancy / contract details"),
+    "cases": ("/v2/contact-form", "list existing cases"),
+    "case-types": ("/v2/contact-form/type", "list available case form types"),
+    "invoices": ("/v1/invoice", "list invoices"),
+}
+
+
+class ApiError(Exception):
+    def __init__(self, message, body=None):
+        super().__init__(message)
+        self.body = body
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def get_token():
     try:
-        return json.loads(TOKEN_FILE.read_text())["token"]
-    except (OSError, KeyError, ValueError) as exc:
-        raise SystemExit(f"No token found in {TOKEN_FILE}. Run avy-login.py first. ({exc})")
+        token = json.loads(TOKEN_FILE.read_text())["token"]
+        if isinstance(token, str) and token.strip():
+            return token
+    except (OSError, KeyError, TypeError, ValueError):
+        pass
+    raise SystemExit(f"No usable token in {TOKEN_FILE}. Run avy-login first.")
 
 
-def call(method, path, body=None):
-    data = json.dumps(body).encode() if body is not None else None
-    headers = {"Authorization": "Bearer " + get_token(), "Accept": "application/json"}
-    if data is not None:
-        headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(API_BASE + path, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            raw = resp.read().decode()
-    except urllib.error.HTTPError as exc:
-        raw = exc.read().decode()
+def _response_body(response):
+    raw = response.read().decode(errors="replace")
     try:
         return json.loads(raw)
     except ValueError:
         return raw
 
 
+def call(method, path, body=None, *, authenticated=True):
+    if not path.startswith("/") or path.startswith("//"):
+        raise SystemExit("API path must start with a single '/'")
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Accept": "application/json"}
+    if authenticated:
+        headers["Authorization"] = "Bearer " + get_token()
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(API_BASE + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=20) as resp:
+            return _response_body(resp)
+    except urllib.error.HTTPError as exc:
+        with exc:
+            raise ApiError(f"Avy returned HTTP {exc.code}", _response_body(exc)) from None
+    except (OSError, ValueError):
+        raise ApiError("Could not reach the Avy API") from None
+
+
 def emit(value):
     print(json.dumps(value, indent=2, ensure_ascii=False))
 
 
-def option_value(option):
-    """Value accepted by the API for a select option."""
-    return option.get("uuid") or option.get("option")
-
-
-def resolve(field, requested=None, parent_value=None):
-    """Resolve a user-supplied option by uuid, external id or label."""
+def _field_value(field, parent, description, key_answer, requested):
+    label = field.get("label") or field["uuid"]
     options = field.get("options") or []
     if not options:
-        raise SystemExit(f"No options returned for {field.get('label')!r}")
-    if requested is None:
-        if parent_value is None:
-            return option_value(options[0])
-        for option in options:
-            if option.get("parent_option_uuid") == parent_value:
-                return option_value(option)
-        raise SystemExit(f"No option under parent {parent_value!r}")
+        kind = (field.get("type") or "").lower()
+        if kind == "select":
+            raise SystemExit(f"No options returned for {label!r}")
+        if requested is None and kind == "file":
+            raise SystemExit(f"Set {label!r} explicitly with --set {field['uuid']}=VALUE")
+        return description if requested is None else requested
+
+    key_field = KEY_HINTS.search(" ".join(str(field.get(k, "")) for k in ("source", "label", "name")))
+    answer = key_answer.strip().casefold()
+    answers = {"nej", "no", "false", "n"} if answer == "nej" else {answer}
     for option in options:
-        if requested in (option.get("uuid"), option.get("external_id"), option.get("option")):
-            return option_value(option)
-    raise SystemExit(f"Unknown option {requested!r} for {field.get('label')!r}")
-
-
-def is_key_field(field):
-    blob = " ".join(str(field.get(k, "")) for k in ("source", "label", "name")).lower()
-    return bool(KEY_HINTS.search(blob))
-
-
-def choose_value(field, chosen, description, key_answer):
-    """Pick a value for one required field, honouring parent dependencies."""
-    if not field.get("options"):
-        return description
-    parent = field.get("parent_field_uuid")
-    options = field["options"]
-    if parent and parent in chosen:
-        compatible = [
-            o for o in options
-            if not o.get("parent_option_uuid") or o["parent_option_uuid"] == chosen[parent]
-        ]
-        if not compatible:
-            raise SystemExit(
-                f"No option for {field.get('label')!r} under selected parent {chosen[parent]!r}"
-            )
-        options = compatible
-    if is_key_field(field):
-        wanted = key_answer.strip().lower()
-        for option in options:
-            if option.get("option", "").strip().lower() == wanted:
-                return option_value(option)
-        for option in options:
-            if option.get("option", "").strip().lower() in ("nej", "no", "false", "n"):
-                return option_value(option)
-    return option_value(options[0])
+        if option.get("parent_option_uuid") not in (None, "", parent):
+            continue
+        text = option.get("option") or ""
+        value = option.get("uuid") or text
+        if requested is not None:
+            if not any(v not in (None, "") and str(v) == requested
+                       for v in (option.get("uuid"), option.get("external_id"), text)):
+                continue
+        elif key_field and text.strip().casefold() not in answers:
+            continue
+        if value:
+            return value
+    raise SystemExit(f"No matching option for {label!r}")
 
 
 def build_fields(schema, description, key_answer="Nej", overrides=None):
-    """Build the `fields` map for any landlord's case form."""
+    """Select required and explicitly overridden fields after their parents."""
+    fields = {f["uuid"]: f for f in schema["fields"]}
     overrides = overrides or {}
-    required = [f for f in schema["fields"] if f.get("required")]
-    chosen = {}
-    pending = list(required)
-    while pending:
-        progress = False
-        for field in list(pending):
-            parent = field.get("parent_field_uuid")
-            if parent and parent not in chosen and any(f["uuid"] == parent for f in pending):
-                continue
-            uuid = field["uuid"]
-            if uuid in overrides:
-                chosen[uuid] = overrides[uuid]
-            elif field.get("type", "").lower() in TEXT_TYPES:
-                chosen[uuid] = description
-            else:
-                chosen[uuid] = choose_value(field, chosen, description, key_answer)
-            pending.remove(field)
-            progress = True
-        if not progress:
-            raise SystemExit("Circular or unresolved parent fields in form schema")
+    chosen, visiting = {}, set()
+
+    def choose(uuid):
+        if uuid in chosen:
+            return chosen[uuid]
+        if uuid in visiting:
+            raise SystemExit("Circular parent fields in form schema")
+        if uuid not in fields:
+            raise SystemExit(f"Unknown field UUID: {uuid}")
+        field = fields[uuid]
+        visiting.add(uuid)
+        parent = field.get("parent_field_uuid")
+        chosen[uuid] = _field_value(field, choose(parent) if parent else None,
+                                    description, key_answer, overrides.get(uuid))
+        visiting.remove(uuid)
+        return chosen[uuid]
+
+    for uuid, field in fields.items():
+        if field.get("required") or uuid in overrides:
+            choose(uuid)
+    for uuid in overrides.keys() - fields.keys():
+        raise SystemExit(f"Unknown field UUID: {uuid}")
     return chosen
 
 
 def select_form_type(explicit=None):
-    if explicit:
+    if explicit is not None:
         return explicit
     types = call("GET", "/v2/contact-form/type")
     visible = [t for t in types if t.get("show_in_ui", True)]
@@ -151,53 +148,61 @@ def select_form_type(explicit=None):
     return visible[0]["form_type_id"]
 
 
-def capabilities(refresh=False):
-    """Show the locally cached capability map, or rebuild it from the API."""
-    if refresh:
-        data = {
-            "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "token_expires_at": None,
-        }
-        token = get_token()
-        try:
-            segment = token.split(".")[1]
-            segment += "=" * (-len(segment) % 4)
-            exp = json.loads(base64.urlsafe_b64decode(segment)).get("exp")
-            if exp:
-                data["token_expires_at"] = datetime.datetime.fromtimestamp(
-                    exp, datetime.timezone.utc).isoformat()
-        except (IndexError, ValueError):
-            pass
-        try:
-            data["flags"] = sorted(call("GET", "/v1/features").get("flags", []))
-        except Exception as exc:
-            data["flags_error"] = str(exc)
-        try:
-            data["form_types"] = [
-                {"form_type_id": t.get("form_type_id"), "name": t.get("name")}
-                for t in call("GET", "/v2/contact-form/type")
-            ]
-        except Exception as exc:
-            data["form_types_error"] = str(exc)
-        CAP_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CAP_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-        CAP_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        print(f"Refreshed {CAP_FILE}")
+def write_private_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False)
     try:
-        emit(json.loads(CAP_FILE.read_text()))
+        with temp:
+            json.dump(data, temp, indent=2, ensure_ascii=False)
+        os.replace(temp.name, path)
+    finally:
+        Path(temp.name).unlink(missing_ok=True)
+
+
+def _token_expiry(token):
+    try:
+        segment = token.split(".")[1]
+        exp = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))["exp"]
+        return datetime.datetime.fromtimestamp(exp, datetime.timezone.utc).isoformat()
+    except (IndexError, KeyError, OSError, OverflowError, TypeError, ValueError):
+        return None
+
+
+def refresh_capabilities():
+    data = {
+        "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "token_expires_at": _token_expiry(get_token()),
+    }
+    try:
+        features = call("GET", "/v1/features")
+        data["flags"] = sorted(features.get("flags", []))
+        data["config_keys"] = sorted((features.get("config") or {}).keys())
+    except (ApiError, AttributeError, TypeError) as exc:
+        data["flags_error"] = str(exc) if isinstance(exc, ApiError) else "Unexpected features response"
+    try:
+        data["form_types"] = [
+            {"form_type_id": t.get("form_type_id"), "name": t.get("name")}
+            for t in call("GET", "/v2/contact-form/type")
+        ]
+    except (ApiError, AttributeError, TypeError) as exc:
+        data["form_types_error"] = str(exc) if isinstance(exc, ApiError) else "Unexpected form types response"
+    write_private_json(CAP_FILE, data)
+    return data
+
+
+def _cached_capabilities():
+    try:
+        return json.loads(CAP_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        raise SystemExit(f"No capability map at {CAP_FILE}. Run avy-login.py or avy capabilities --refresh.")
+        raise SystemExit(f"No capability map at {CAP_FILE}. Run avy capabilities --refresh.") from None
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    sub.add_parser("profile", help="current tenant profile")
-    sub.add_parser("tenants", help="tenancy / contract details")
-    sub.add_parser("cases", help="list existing cases")
-    sub.add_parser("case-types", help="list available case form types")
-    sub.add_parser("invoices", help="list invoices")
+    for name, (_, help_text) in READ_COMMANDS.items():
+        sub.add_parser(name, help=help_text)
     caps = sub.add_parser("capabilities", help="show locally cached enabled features")
     caps.add_argument("--refresh", action="store_true", help="rebuild from the API")
 
@@ -209,6 +214,7 @@ def main():
     raw.add_argument("method")
     raw.add_argument("path")
     raw.add_argument("--body", help="JSON request body")
+    raw.add_argument("--confirm", action="store_true", help="send a non-read request")
 
     create = sub.add_parser("case-create", help="report an issue")
     create.add_argument("description")
@@ -220,23 +226,34 @@ def main():
 
     args = parser.parse_args()
 
-    if args.cmd == "profile":
-        emit(call("GET", "/v1/auth/profile"))
-    elif args.cmd == "tenants":
-        emit(call("GET", "/v1/tenants"))
-    elif args.cmd == "cases":
-        emit(call("GET", "/v2/contact-form"))
-    elif args.cmd == "case-types":
-        emit(call("GET", "/v2/contact-form/type"))
+    try:
+        _run(args)
+    except ApiError as exc:
+        if exc.body is not None:
+            emit(exc.body)
+        raise SystemExit(str(exc)) from None
+    except OSError as exc:
+        raise SystemExit(str(exc)) from None
+
+
+def _run(args):
+    if args.cmd in READ_COMMANDS:
+        emit(call("GET", READ_COMMANDS[args.cmd][0]))
     elif args.cmd == "capabilities":
-        capabilities(refresh=args.refresh)
-    elif args.cmd == "invoices":
-        emit(call("GET", "/v1/invoice"))
+        emit(refresh_capabilities() if args.refresh else _cached_capabilities())
     elif args.cmd == "form":
         suffix = "?include_options=true" if args.options else ""
         emit(call("GET", f"/v2/contact-form/type/{select_form_type(args.type)}{suffix}"))
     elif args.cmd == "raw":
-        emit(call(args.method.upper(), args.path, json.loads(args.body) if args.body else None))
+        method = args.method.upper()
+        try:
+            body = json.loads(args.body) if args.body is not None else None
+        except ValueError as exc:
+            raise SystemExit(f"Invalid JSON for --body: {exc}") from None
+        if method not in {"GET", "HEAD", "OPTIONS"} and not args.confirm:
+            print("DRY RUN - nothing sent. Re-run with --confirm to send the request.", file=sys.stderr)
+        else:
+            emit(call(method, args.path, body))
     elif args.cmd == "case-create":
         form_id = select_form_type(args.type)
         schema = call("GET", f"/v2/contact-form/type/{form_id}?include_options=true")

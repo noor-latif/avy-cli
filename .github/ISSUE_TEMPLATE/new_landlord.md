@@ -13,19 +13,9 @@ e.g. Lime, Fast2, Balder, Hogia, Momentum, Unit4, Dynamics 365
 Paste the command and the error. Please redact anything personal.
 
 **Form schema**
-Run this and paste the output — it contains form structure and option labels,
-not personal data:
+Inspect `avy form --options` and share a small synthetic example with the same
+field types and parent links. Replace identifiers and option labels with made-up
+values. Do not paste live API responses, addresses, names, or identifiers.
 
-```bash
-avy form --options
-```
-
-**Available form types**
-```bash
-avy case-types
-```
-
-**Feature flags** (optional)
-```bash
-avy capabilities
-```
+If relevant, name the affected form type and feature flags without pasting raw
+`avy case-types` or `avy capabilities` output.

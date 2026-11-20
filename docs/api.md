@@ -13,6 +13,9 @@ Authenticated requests use:
 Authorization: Bearer <token>
 ```
 
+The client does not follow HTTP redirects, so requests and credentials stay
+at the configured API base.
+
 ## Authentication flow
 
 The app supports BankID, email, SMS and magic-link login. BankID was the flow
@@ -83,7 +86,8 @@ GET /v2/contact-form/type/{form_type_id}?include_options=true
 ```
 
 The `include_options=true` parameter is essential: without it, select fields
-have no `options` array. Fields are identified by their `source`, not by UUID:
+have no `options` array. The CLI uses the schema's field UUIDs and parent
+links, with `source`, `label` and `name` as hints for access questions:
 
 | source | meaning |
 | --- | --- |
@@ -126,5 +130,5 @@ Create payload shape (validated against a real tenant):
 `value` key. For options with an empty `uuid` (such as Ja/Nej), send the label
 text as the value.
 
-The CLI discovers all UUIDs at runtime, so the same code works for other
-landlords with different form configurations.
+The CLI discovers UUIDs at runtime. Use `case-create` without `--confirm` to
+check the selected values for your tenancy before submitting.

@@ -13,8 +13,8 @@ Read `CONTRIBUTING.md` first. Summary of non-negotiables:
 
 Useful files:
 
-- `avy.py` — CLI and payload construction (`build_fields`, `choose_value`)
-- `avy-login.py` — BankID login and capability cache
+- `avy.py` — CLI, case payload construction and capability cache
+- `avy_login.py` — BankID login and local QR page
 - `tests/test_avy.py` — synthetic schemas, including a non-Vitec integration
 - `docs/api.md` — endpoint map and form field sources
 - `.local/INVESTIGATION.md` — local-only handoff notes (gitignored; not present

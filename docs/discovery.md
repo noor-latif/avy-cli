@@ -46,8 +46,7 @@ Go's JSON unmarshalling errors also disclosed the exact expected type:
 ## 4. Ask for options explicitly
 
 `GET /v2/contact-form/type/24` returned fields without options. Adding
-`?include_options=true` returned the full dependent option tree with parent
-links, which is enough to build a valid case payload for any tenancy.
+`?include_options=true` returned the dependent option tree with parent links.
 
 ## 5. Log in once
 
@@ -69,4 +68,4 @@ unlocks the rest of the API.
 1. Obtain the app bundle and extract `libapp.so` for your device ABI.
 2. Mine strings and confirm the API base URL (it may differ).
 3. Log in and call `/v2/contact-form/type`.
-4. Run this CLI — form fields are discovered by `source`, not hardcoded UUIDs.
+4. Run `avy form --options` to inspect the schema before previewing a case.

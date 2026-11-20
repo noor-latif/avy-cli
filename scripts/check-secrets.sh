@@ -11,15 +11,12 @@ patterns=(
   '/tmp/opencode'
 )
 
-failed=0
-for pattern in "${patterns[@]}"; do
-  if git ls-files -z | grep -zv '^scripts/check-secrets.sh$' | xargs -0 -r grep -nE "$pattern" 2>/dev/null; then
-    echo "ERROR: possible secret/personal data matched: $pattern" >&2
-    failed=1
-  fi
-done
-
-if [ "$failed" -ne 0 ]; then
-  exit 1
-fi
+status=0
+printf '%s\n' "${patterns[@]}" |
+  git grep --quiet -I -E -f - -- . ':!scripts/check-secrets.sh' || status=$?
+case "$status" in
+  0) echo "ERROR: possible secret/personal data in tracked files." >&2; exit 1 ;;
+  1) ;;
+  *) exit "$status" ;;
+esac
 echo "Secret scan clean."

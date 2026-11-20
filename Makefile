@@ -2,9 +2,8 @@
 
 setup:
 	python3 -m venv .venv
-	.venv/bin/pip install -q --upgrade pip
-	.venv/bin/pip install -q qrcode pillow
-	@echo "Ready. Use '.venv/bin/python avy.py ...' or 'make test'."
+	.venv/bin/pip install -q -e .
+	@echo "Ready. Use '.venv/bin/avy', 'make login', or 'make test'."
 
 test:
 	python3 -m unittest discover -s tests -v
@@ -13,10 +12,10 @@ check: test
 	bash scripts/check-secrets.sh
 
 lint:
-	python3 -m compileall -q avy.py avy-login.py tests
+	python3 -m compileall -q avy.py avy-login.py avy_login.py tests
 
 login:
-	python3 avy-login.py
+	.venv/bin/avy-login
 
 clean:
 	rm -rf .venv __pycache__ tests/__pycache__

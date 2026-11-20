@@ -5,50 +5,41 @@ description: Report housing faults, list invoices, cases and tenancy details thr
 
 # avy-cli
 
-Unofficial, agent-facing CLI for the Avy resident API. Not affiliated with
-Avy AB. Uses undocumented endpoints; they may break without notice. Never
-bypasses BankID — a human must approve login in their own BankID app.
+Python 3.9+. Install with `pip install git+https://github.com/noor-latif/avy-cli.git`.
+From a checkout, `python3 avy.py` and `python3 avy-login.py` are equivalent
+once the package dependencies are installed.
 
-## Prerequisites
-
-- Python 3.9+ with `qrcode` and `pillow` installed.
-- A session token: run `python3 avy-login.py`, open the printed localhost URL,
-  scan the live QR with BankID and approve. Token is saved to
-  `~/.avy/token.json` (mode 0600).
-
-## Commands
+Run `avy-login`, open the printed localhost URL, and have the user scan the
+live QR and approve in their own BankID app. Check that BankID names Avy as
+the relying party. The token is stored at `~/.avy/token.json` (mode `0600`).
 
 ```bash
-python3 avy.py profile
-python3 avy.py tenants
-python3 avy.py invoices
-python3 avy.py cases
-python3 avy.py case-types
-python3 avy.py form --options
-python3 avy.py case-create "Description of fault"          # dry run
-python3 avy.py case-create "Description of fault" --confirm # submits
-python3 avy.py raw GET /v1/message/list
+avy profile
+avy tenants
+avy invoices
+avy cases
+avy case-types
+avy capabilities
+avy form --options
+avy case-create "Description of fault"
+avy raw GET /v1/message/list
 ```
 
-## Agent guidance
+- Preview a case without `--confirm`. Show the user the resolved fields
+  privately and add `--confirm` only after explicit approval.
+- Inspect `form --options`; repeat `--set UUID=VALUE` to override fields.
+  Selects accept a label, external ID or option UUID under the chosen parent.
+  Optional fields are only sent if overridden or needed as a parent; a
+  required attachment needs an explicit value. Invalid fields or options abort.
+- `--key` defaults to `Nej` and fails if no negative option matches. Never
+  select a positive access answer without the user's approval.
+- `raw` sends `GET`, `HEAD` and `OPTIONS` immediately. Other methods send
+  nothing without explicit approval and `--confirm`.
+- `capabilities` reads `~/.avy/capabilities.json` offline; `--refresh`
+  rebuilds it. Read commands print JSON. On HTTP 401, ask the user to log in
+  again; `403 feature not available` means the feature is disabled.
+- Never print, log or commit the token. Keep account output and live form
+  schemas out of shared channels and issue reports.
 
-- Always run `case-create` **without** `--confirm` first and show the user the
-  payload. Only add `--confirm` after explicit approval, since it creates a
-  real maintenance case sent to the landlord.
-- Fields are discovered at runtime for any landlord integration. Use
-  `form --options` to find a field UUID, then override it with
-  `--set '<field-uuid>=<option label or uuid>'` when a dry run picks the wrong
-  value. Option UUID, external ID and label are all accepted.
-- Read `~/.avy/capabilities.json` (or run `avy capabilities`) first to see
-  which features the landlord enabled and which form types exist. Use
-  `avy capabilities --refresh` to rebuild it; no personal data is stored.
-- Never print, log or commit the token. Never paste `tenants`/`invoices` output
-  into shared channels: it contains personal data.
-- A 401 means the token expired: ask the user to run `avy-login.py` again.
-- Output is JSON; use `--raw`-style parsing with `python3 -c` or `jq`.
-- `403 {"status":"feature not available"}` means the landlord has not enabled
-  that feature for this tenancy — not a bug in the CLI.
-
-## Configuration
-
-`AVY_TOKEN_FILE`, `AVY_API_BASE`, `AVY_LOGIN_PORT`, `AVY_LOGIN_TIMEOUT`.
+Configuration: `AVY_TOKEN_FILE`, `AVY_CAPABILITIES_FILE`, `AVY_API_BASE`,
+`AVY_LOGIN_PORT`, `AVY_LOGIN_TIMEOUT`.
