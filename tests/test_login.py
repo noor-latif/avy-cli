@@ -132,11 +132,17 @@ class LoginTests(LoginServerTestCase):
         self.assertIn(b'id="bankid-launch"', body)
         self.assertNotIn(b"synthetic-launch", body)
 
-        status, headers, body = self.request("POST", "/rearm")
+        status, headers, body = self.request("GET", "/launch")
         self.assertEqual(status, 200)
         self.assertEqual(self.header(headers, "Content-Type"), "application/json")
+        launch = json.loads(body)
+        self.assertEqual(launch["token"], "synthetic-launch&value")
+        self.assertGreaterEqual(launch["age"], 0)
+
+        status, headers, body = self.request("POST", "/rearm")
+        self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["token"], "synthetic-launch&value")
-        self.assertEqual(self.avy.orders, 2, "a launch re-arms before opening BankID")
+        self.assertEqual(self.avy.orders, 2, "a tap after expiry arms exactly one new order")
 
         images = []
         for tick in (1, 2):
@@ -180,10 +186,18 @@ class LoginTests(LoginServerTestCase):
         self.assertEqual(
             json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")
 
-    def test_expired_order_is_replaced_and_login_completes(self):
+    def test_expired_order_waits_for_a_page_launch_then_completes(self):
         self.start(collect=(("failed", "startFailed"), ("complete", "")))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if b"order expired" in self.request("GET", "/status")[2]:
+                break
+            time.sleep(0.05)
+        else:
+            self.fail(f"page never reported the expired order: {self.output.getvalue()!r}")
+        self.assertEqual(self.avy.orders, 1, "the helper must not arm a second order by itself")
+        self.request("POST", "/rearm")
         self.complete()
         self.assertEqual(self.avy.orders, 2)
-        self.assertIn("new order 1/5", self.output.getvalue())
         self.assertEqual(
             json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")

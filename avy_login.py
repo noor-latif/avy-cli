@@ -16,8 +16,7 @@ from avy import (ApiError, CAP_FILE, TOKEN_FILE, call, refresh_capabilities,
 
 PORT = int(os.environ.get("AVY_LOGIN_PORT", "8765"))
 TIMEOUT = int(os.environ.get("AVY_LOGIN_TIMEOUT", "300"))
-RETRY_HINTS = ("startFailed", "expiredTransaction")
-MAX_RETRIES = 5
+EXPIRED_HINTS = ("startFailed", "expiredTransaction")
 
 HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -32,6 +31,7 @@ img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 <img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
 <script>
 const img=document.getElementById('qr');
+img.onerror=()=>{document.getElementById('status').textContent='QR expired. Tap Open BankID.';};
 setInterval(()=>{img.src='/qr.svg?t='+Date.now();},1000);
 const poll=setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
 document.getElementById('status').textContent=t;
@@ -47,9 +47,13 @@ async function openBankID(event, viaWeb) {
     if (event) event.preventDefault();
     let token;
     try {
-        const reply = await fetch('/rearm', {method: 'POST'});
-        if (!reply.ok) return;
-        token = (await reply.json()).token;
+        const current = await (await fetch('/launch')).json();
+        token = current.age > 25 ? '' : current.token;
+        if (!token) {
+            const reply = await fetch('/rearm', {method: 'POST'});
+            if (!reply.ok) return;
+            token = (await reply.json()).token;
+        }
     } catch (_) { return; }
     const query = 'autostarttoken=' + encodeURIComponent(token)
         + '&redirect=' + encodeURIComponent(mobile ? location.origin + '/#bankid' : 'null');
@@ -115,14 +119,15 @@ def _login(*, confirm=False):
             f"{TOKEN_FILE} holds a session that has not expired; run avy-login --confirm "
             "to replace it.")
     request = partial(call, authenticated=False)
-    state = {"order": None, "qr_path": None, "token": "",
+    state = {"order": None, "qr_path": None, "token": "", "armed_at": 0.0, "generation": 0,
              "text": "Waiting for BankID..."}
     state_lock = threading.Lock()
 
     def arm():
-        """Ask Avy for a fresh order; Avy's order must be started within ~30 seconds.
+        """Ask Avy for an order; the app must start it within about 30 seconds.
 
-        Called at startup, by every launch from the page, and when an order expires.
+        Called at startup and when the page asks for one, never on a timer: two live
+        orders would let the app approve one while the page polls the other.
         """
         auth = request("POST", "/v1/auth/bankid/auth", {})
         if not isinstance(auth, dict) or not all(
@@ -133,11 +138,22 @@ def _login(*, confirm=False):
         with state_lock:
             state.update(order={"order_ref": auth["order_ref"]},
                          qr_path="/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe=""),
-                         token=auto_start if isinstance(auto_start, str) else "")
+                         token=auto_start if isinstance(auto_start, str) else "",
+                         armed_at=time.monotonic(),
+                         generation=state["generation"] + 1)
         return state["order"]
 
     order = arm()
     deadline = time.monotonic() + TIMEOUT
+
+    def wait_for_rearm(generation, deadline):
+        """Block until the page asks for a new order, so the app and page never disagree."""
+        while time.monotonic() < deadline:
+            with state_lock:
+                if state["generation"] != generation:
+                    return True
+            time.sleep(0.5)
+        return False
 
     class Handler(BaseHTTPRequestHandler):
         timeout = 5
@@ -166,6 +182,10 @@ def _login(*, confirm=False):
                 content_type = "image/svg+xml"
             elif path == "/status":
                 body, content_type = state["text"].encode(), "text/plain; charset=utf-8"
+            elif path == "/launch":
+                body = json.dumps({"token": state["token"],
+                                   "age": round(time.monotonic() - state["armed_at"], 1)}).encode()
+                content_type = "application/json"
             elif path == "/":
                 body, content_type = HTML.encode(), "text/html; charset=utf-8"
             else:
@@ -175,7 +195,10 @@ def _login(*, confirm=False):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def do_POST(self):
             if self.path.partition("?")[0] != "/rearm":
@@ -201,8 +224,9 @@ def _login(*, confirm=False):
             print("To log in from a phone, tunnel this port and open the tunnel URL there.",
                   flush=True)
             print("Confirm that the BankID app shows Avy as the relying party.", flush=True)
-            retries = 0
             while time.monotonic() < deadline:
+                with state_lock:
+                    order, generation = state["order"], state["generation"]
                 result = request("POST", "/v1/auth/bankid/collect", order)
                 status = result.get("status") if isinstance(result, dict) else None
                 if status == "complete":
@@ -214,17 +238,17 @@ def _login(*, confirm=False):
                 hint = result.get("hint_code", "")
                 if status == "pending":
                     text = f"BankID: pending ({hint})"
-                elif hint in RETRY_HINTS and retries < MAX_RETRIES:
-                    retries += 1
-                    order = arm()
-                    text = "BankID: retrying"
-                    print(f"The order expired before BankID started; new order "
-                          f"{retries}/{MAX_RETRIES}.", flush=True)
+                    if text != state["text"]:
+                        state["text"] = text
+                        print(text, flush=True)
+                elif hint in EXPIRED_HINTS:
+                    state["text"] = "BankID: order expired. Tap Open BankID."
+                    print(state["text"], flush=True)
+                    if not wait_for_rearm(generation, deadline):
+                        raise SystemExit("BankID approval timed out")
+                    continue
                 else:
                     raise SystemExit(f"BankID: {status} ({hint})")
-                if text != state["text"]:
-                    state["text"] = text
-                    print(text, flush=True)
                 time.sleep(1)
             else:
                 raise SystemExit("BankID approval timed out")
