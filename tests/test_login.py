@@ -104,7 +104,7 @@ class LoginServerTestCase(unittest.TestCase):
     def complete(self):
         """Let collect finish with status=complete and wait for the token to be written."""
         self.done.set()
-        self.login.result(timeout=5)
+        self.login.result(timeout=10)
 
     def request(self, method, path, body=None, headers=None):
         connection = HTTPConnection("127.0.0.1", self.port.result(timeout=5), timeout=5)

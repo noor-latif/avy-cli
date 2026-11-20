@@ -31,12 +31,16 @@ img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 <img id="qr" src="/qr.svg" alt="Live BankID QR code"><p id="status">Waiting...</p>
 <script>
 const img=document.getElementById('qr');
-img.onerror=()=>{document.getElementById('status').textContent='QR expired. Reload this page.';};
-setInterval(()=>{img.src='/qr.svg?t='+Date.now();},1000);
+const label=document.getElementById('status');
+let finished=false;
+img.onerror=()=>{if(!finished)label.textContent='QR expired. Reload this page.';};
+const qr=setInterval(()=>{if(!finished)img.src='/qr.svg?t='+Date.now();},1000);
 const poll=setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
-document.getElementById('status').textContent=t;
-if(t==='BankID: retrying'){history.replaceState({},'');location.replace('/');}
-if(t.startsWith('Logged in')){clearInterval(poll);}},2000);
+label.textContent=t;
+if(t.startsWith('Logged in')){
+    finished=true;clearInterval(poll);clearInterval(qr);
+    img.remove();label.style.fontSize='1.4em';
+}},2000);
 const launch = document.getElementById('bankid-launch');
 const web = document.getElementById('bankid-web');
 const agent = navigator.userAgent;
@@ -238,7 +242,7 @@ def _login(*, confirm=False):
                 status = result.get("status") if isinstance(result, dict) else None
                 if status == "complete":
                     state["text"] = "Logged in. You can close this page."
-                    time.sleep(3)
+                    time.sleep(5)
                     break
                 if status not in ("pending", "failed", "cancelled"):
                     raise SystemExit("Avy returned an unknown BankID status")
