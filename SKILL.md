@@ -13,6 +13,12 @@ Run `avy-login`, open the printed localhost URL, and have the user scan the
 live QR and approve in their own BankID app. Check that BankID names Avy as
 the relying party. The token is stored at `~/.avy/token.json` (mode `0600`).
 
+When the CLI runs on a machine the phone is not on, tunnel the printed port
+(`npx devhop <port> --no-qr`) and open the tunnel URL on the phone; the page
+hands off to the BankID app. A fresh tunnel takes about a minute before its
+name resolves, and the page arms its BankID order on load, so open the link
+only once it loads and reload if the page says the order expired.
+
 ```bash
 avy profile
 avy tenants

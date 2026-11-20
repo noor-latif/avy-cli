@@ -67,7 +67,8 @@ Each page load arms exactly one BankID order, so the app always approves the
 same one the page is polling. The order lasts about 30 seconds: if the page says
 it expired, reload the page and a fresh one is armed. **Open BankID** is a plain
 `bankid://` link, which is what makes it work in Safari and Chrome alike; the
-browser opens the app itself when the page loads, and a tap always works. Once
+browser tries to open the app itself when the page loads, and tapping the link
+works in both. Once
 the page says the login is complete, stop Devhop.
 
 The tunnel URL is the page's only credential; stop Devhop when the login
@@ -149,7 +150,7 @@ Add `--confirm` to send the write.
 | `AVY_CAPABILITIES_FILE` | `~/.avy/capabilities.json` | cached capability map |
 | `AVY_API_BASE` | `https://api.avy.se/api` | API base URL |
 | `AVY_LOGIN_PORT` | `8765` | login page port |
-| `AVY_LOGIN_TIMEOUT` | `300` | seconds to wait for approval |
+| `AVY_LOGIN_TIMEOUT` | `300` | seconds from the first page load to approve |
 
 ## Security and privacy
 
