@@ -64,10 +64,10 @@ chat webview cannot hand off at all, so open the link in Safari or Chrome. On
 desktop, scan the live QR with your phone. Approve only if BankID names **Avy**.
 
 Avy's BankID order has to be started within about 30 seconds. Tapping **Open
-BankID** arms a fresh order first, so the app is never handed a token that is
-about to expire. If nothing starts the app, the helper arms a new order (up to
-five) and the page reopens BankID by itself. Once the page says the login is
-complete, stop Devhop.
+BankID** reuses the current order while it is fresh and arms one new order when
+it has expired, so only one order is ever live and the app always approves the
+same one the page is polling. If the page says the order expired, tap again.
+Once the page says the login is complete, stop Devhop.
 
 The tunnel URL is the page's only credential; stop Devhop when the login
 finishes. The session token is written on the machine running the CLI, never in
