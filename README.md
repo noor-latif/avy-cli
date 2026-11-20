@@ -62,6 +62,10 @@ On iOS and Android the page tries to open BankID by itself; if
 the browser blocks the launch, return to the page and tap **Open BankID**. On
 desktop, scan the live QR with your phone. Approve only if BankID names **Avy**.
 
+Avy's BankID order has to be started within about 30 seconds. If nothing opens
+the app in that window, the helper arms a new order (up to five) and the page
+reopens BankID by itself, so a missed first attempt still recovers.
+
 The tunnel URL is the page's only credential; stop Devhop when the login
 finishes. The session token is written on the machine running the CLI, never in
 the browser or through the tunnel.

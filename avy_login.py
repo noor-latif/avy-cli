@@ -16,6 +16,8 @@ from avy import (ApiError, CAP_FILE, TOKEN_FILE, call, refresh_capabilities,
 
 PORT = int(os.environ.get("AVY_LOGIN_PORT", "8765"))
 TIMEOUT = int(os.environ.get("AVY_LOGIN_TIMEOUT", "300"))
+RETRY_HINTS = ("startFailed", "expiredTransaction")
+MAX_RETRIES = 5
 
 HTML = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -30,8 +32,9 @@ img{width:min(360px,100%);aspect-ratio:1;image-rendering:pixelated}
 <script>
 const img=document.getElementById('qr');
 setInterval(()=>{img.src='/qr.svg?t='+Date.now();},1000);
-setInterval(async()=>{const r=await fetch('/status');
-document.getElementById('status').textContent=await r.text();},2000);
+setInterval(async()=>{const r=await fetch('/status');const t=await r.text();
+document.getElementById('status').textContent=t;
+if(t==='BankID: retrying'){history.replaceState({},'');location.replace('/');}},2000);
 const launch = document.getElementById('bankid-launch');
 if (launch) {
     const token = encodeURIComponent(launch.dataset.token);
@@ -95,22 +98,30 @@ def _login(*, confirm=False):
             f"{TOKEN_FILE} holds a session that has not expired; run avy-login --confirm "
             "to replace it.")
     request = partial(call, authenticated=False)
-    auth = request("POST", "/v1/auth/bankid/auth", {})
-    if not isinstance(auth, dict) or not all(
-        isinstance(auth.get(key), str) and auth[key] for key in ("order_ref", "qr_start_token")
-    ):
-        raise SystemExit("Avy did not return a BankID order and QR token")
-    order = {"order_ref": auth["order_ref"]}
-    qr_path = "/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe="")
-    auto_start = auth.get("auto_start_token")
-    launch = ""
-    if isinstance(auto_start, str) and auto_start.strip():
-        token = quote(auto_start, safe="")
-        launch = (f'<p><a id="bankid-launch" rel="noreferrer" data-token="{token}" '
-                  f'href="https://app.bankid.com/?autostarttoken={token}&amp;redirect=null">'
-                  'Open BankID</a></p>')
-    login_page = HTML.replace("<!-- launch -->", launch).encode()
-    status_text = "Waiting for BankID..."
+    state = {"order": None, "qr_path": None, "launch": "", "text": "Waiting for BankID..."}
+    state_lock = threading.Lock()
+
+    def arm():
+        """Ask Avy for a fresh order; Avy's order must be started within ~30 seconds."""
+        auth = request("POST", "/v1/auth/bankid/auth", {})
+        if not isinstance(auth, dict) or not all(
+            isinstance(auth.get(key), str) and auth[key] for key in ("order_ref", "qr_start_token")
+        ):
+            raise SystemExit("Avy did not return a BankID order and QR token")
+        launch = ""
+        auto_start = auth.get("auto_start_token")
+        if isinstance(auto_start, str) and auto_start.strip():
+            token = quote(auto_start, safe="")
+            launch = (f'<p><a id="bankid-launch" rel="noreferrer" data-token="{token}" '
+                      f'href="https://app.bankid.com/?autostarttoken={token}&amp;redirect=null">'
+                      'Open BankID</a></p>')
+        with state_lock:
+            state.update(order={"order_ref": auth["order_ref"]},
+                         qr_path="/v1/auth/bankid/qr/" + quote(auth["qr_start_token"], safe=""),
+                         launch=launch)
+        return state["order"]
+
+    order = arm()
     deadline = time.monotonic() + TIMEOUT
 
     class Handler(BaseHTTPRequestHandler):
@@ -129,7 +140,7 @@ def _login(*, confirm=False):
             path = self.path.partition("?")[0]
             if path == "/qr.svg":
                 try:
-                    result = request("GET", qr_path)
+                    result = request("GET", state["qr_path"])
                     payload = result.get("qr_code") if isinstance(result, dict) else None
                 except ApiError:
                     payload = None
@@ -139,9 +150,10 @@ def _login(*, confirm=False):
                 body = qrcode.make(payload, image_factory=SvgPathFillImage).to_string()
                 content_type = "image/svg+xml"
             elif path == "/status":
-                body, content_type = status_text.encode(), "text/plain; charset=utf-8"
+                body, content_type = state["text"].encode(), "text/plain; charset=utf-8"
             elif path == "/":
-                body, content_type = login_page, "text/html; charset=utf-8"
+                body = HTML.replace("<!-- launch -->", state["launch"]).encode()
+                content_type = "text/html; charset=utf-8"
             else:
                 self.send_error(404)
                 return
@@ -163,6 +175,7 @@ def _login(*, confirm=False):
             print("To log in from a phone, tunnel this port and open the tunnel URL there.",
                   flush=True)
             print("Confirm that the BankID app shows Avy as the relying party.", flush=True)
+            retries = 0
             while time.monotonic() < deadline:
                 result = request("POST", "/v1/auth/bankid/collect", order)
                 status = result.get("status") if isinstance(result, dict) else None
@@ -170,12 +183,20 @@ def _login(*, confirm=False):
                     break
                 if status not in ("pending", "failed", "cancelled"):
                     raise SystemExit("Avy returned an unknown BankID status")
-                new_status = f"BankID: {status} ({result.get('hint_code', '')})"
-                if status != "pending":
-                    raise SystemExit(new_status)
-                if new_status != status_text:
-                    status_text = new_status
-                    print(status_text, flush=True)
+                hint = result.get("hint_code", "")
+                if status == "pending":
+                    text = f"BankID: pending ({hint})"
+                elif hint in RETRY_HINTS and retries < MAX_RETRIES:
+                    retries += 1
+                    order = arm()
+                    text = "BankID: retrying"
+                    print(f"The order expired before BankID started; new order "
+                          f"{retries}/{MAX_RETRIES}.", flush=True)
+                else:
+                    raise SystemExit(f"BankID: {status} ({hint})")
+                if text != state["text"]:
+                    state["text"] = text
+                    print(text, flush=True)
                 time.sleep(1)
             else:
                 raise SystemExit("BankID approval timed out")

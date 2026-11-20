@@ -26,26 +26,31 @@ def token_expiring_in(seconds):
 
 
 class SyntheticAvy:
-    """Answer BankID calls without touching Avy, and hold collect until the test ends."""
+    """Answer BankID calls without touching Avy, replaying a scripted collect sequence."""
 
-    def __init__(self, done, frames, status):
+    def __init__(self, done, frames, collect):
         self.done = done
         self.frames = frames
-        self.status = status
+        self.collect = iter(collect)
+        self.last = collect[-1]
+        self.orders = 0
         self.collecting = threading.Event()
 
     def __call__(self, method, path, body=None, *, authenticated=True):
         if path.startswith("/v1/auth/bankid/") and authenticated:
             raise AssertionError(f"BankID call must not be authenticated: {path}")
         if path == "/v1/auth/bankid/auth":
-            return {"order_ref": "fixture-order", "qr_start_token": "fixture-qr",
+            self.orders += 1
+            return {"order_ref": f"fixture-order-{self.orders}", "qr_start_token": "fixture-qr",
                     "auto_start_token": "synthetic-launch&value"}
         if path == "/v1/auth/bankid/qr/fixture-qr":
             return {"qr_code": next(self.frames)}
         if path == "/v1/auth/bankid/collect":
             self.collecting.set()
-            self.done.wait(5)
-            return {"status": self.status}
+            status, hint = next(self.collect, self.last)
+            if status == "cancelled":
+                self.done.wait(5)
+            return {"status": status, "hint_code": hint}
         if path == "/v1/auth/bankid/login":
             return {"token": "synthetic-token"}
         if authenticated and path == "/v1/auth/profile":
@@ -55,7 +60,7 @@ class SyntheticAvy:
 
 @unittest.skipUnless(importlib.util.find_spec("qrcode"), "login dependency not installed")
 class LoginServerTestCase(unittest.TestCase):
-    def start(self, *, status="cancelled", token=None, confirm=False):
+    def start(self, *, collect=(("cancelled", ""),), token=None, confirm=False):
         """Run _login on a real loopback server bound to an ephemeral port."""
         self.done = threading.Event()
         self.port = Future()
@@ -74,7 +79,7 @@ class LoginServerTestCase(unittest.TestCase):
 
         stack = ExitStack()
         self.addCleanup(stack.close)
-        self.avy = SyntheticAvy(self.done, self.frames, status)
+        self.avy = SyntheticAvy(self.done, self.frames, collect)
         stack.enter_context(patch.object(avy_login, "call", self.avy))
         stack.enter_context(patch.object(avy_login, "TOKEN_FILE", self.token_file))
         stack.enter_context(patch.object(avy_login, "CAP_FILE", self.tokens / "capabilities.json"))
@@ -158,14 +163,22 @@ class LoginTests(LoginServerTestCase):
         self.assertEqual(json.loads(token_file.read_text(encoding="utf-8"))["token"], stored)
 
     def test_expired_session_is_replaced_without_confirm(self):
-        self.start(status="complete", token=token_expiring_in(-60))
+        self.start(collect=(("complete", ""),), token=token_expiring_in(-60))
         self.complete()
         self.assertEqual(
             json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")
         self.assertIn("Logged in as Synthetic Person.", self.output.getvalue())
 
     def test_confirm_replaces_an_unexpired_session(self):
-        self.start(status="complete", token=token_expiring_in(3600), confirm=True)
+        self.start(collect=(("complete", ""),), token=token_expiring_in(3600), confirm=True)
         self.complete()
+        self.assertEqual(
+            json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")
+
+    def test_expired_order_is_replaced_and_login_completes(self):
+        self.start(collect=(("failed", "startFailed"), ("complete", "")))
+        self.complete()
+        self.assertEqual(self.avy.orders, 2)
+        self.assertIn("new order 1/5", self.output.getvalue())
         self.assertEqual(
             json.loads(self.token_file.read_text(encoding="utf-8"))["token"], "synthetic-token")
